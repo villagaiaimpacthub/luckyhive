@@ -30,6 +30,79 @@ let filteredData = []; // Will be populated from backend or based on shipmentDat
 let sortColumn = -1; // -1 means no sort, or use a default like 0 for first column
 let sortDirection = 'asc'; // 'asc' or 'desc'
 
+let currentlyResizingTh = null;
+let startX, startWidth;
+
+function handleMouseDown(e) {
+    currentlyResizingTh = e.target.parentElement; // The TH element
+    startX = e.pageX;
+    startWidth = currentlyResizingTh.offsetWidth;
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    // Add resizing class
+    currentlyResizingTh.classList.add('th-resizing'); 
+    // Prevent text selection during drag
+    document.body.style.userSelect = 'none'; 
+    document.body.style.webkitUserSelect = 'none'; 
+}
+
+function handleMouseMove(e) {
+    if (!currentlyResizingTh) return;
+    const deltaX = e.pageX - startX;
+    const currentWidth = startWidth + deltaX;
+    const finalWidth = Math.max(50, currentWidth); // Apply min width constraint
+    console.log(`Resizing: startX=${startX}, pageX=${e.pageX}, deltaX=${deltaX}, startWidth=${startWidth}, newWidth=${finalWidth}`);
+    currentlyResizingTh.style.width = finalWidth + 'px'; 
+    // Clear previous width state on manual resize
+    delete currentlyResizingTh.dataset.previousWidth; 
+}
+
+function handleMouseUp() {
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+    // Remove resizing class
+    if (currentlyResizingTh) { 
+        currentlyResizingTh.classList.remove('th-resizing');
+    }
+    // Restore text selection
+    document.body.style.userSelect = ''; 
+    document.body.style.webkitUserSelect = '';
+    currentlyResizingTh = null;
+}
+
+function handleDoubleClick(e) {
+    const th = e.target.parentElement; // The TH element
+    const previousWidth = th.dataset.previousWidth;
+
+    if (previousWidth) {
+        // Restore previous width
+        console.log(`Restoring previous width: ${previousWidth}`);
+        th.style.width = previousWidth;
+        delete th.dataset.previousWidth; // Remove the stored state
+    } else {
+        // Auto-fit to content
+        const columnIndex = Array.from(th.parentNode.children).indexOf(th);
+        const tableBody = document.getElementById("shipmentTableBody");
+        let maxWidth = th.scrollWidth; // Start with header width
+        const padding = 18; // Estimate padding
+
+        console.log(`Auto-sizing column ${columnIndex}`);
+        Array.from(tableBody.rows).forEach(row => {
+            const cell = row.cells[columnIndex];
+            if (cell) {
+                maxWidth = Math.max(maxWidth, cell.scrollWidth);
+            }
+        });
+
+        console.log(`Max content width found: ${maxWidth}`);
+        // Store current width before applying auto-fit
+        th.dataset.previousWidth = th.style.width || (th.offsetWidth + 'px'); // Store current style or computed width
+        console.log(`Stored previous width: ${th.dataset.previousWidth}`);
+        // Apply auto-fit width 
+        th.style.width = (maxWidth + padding) + 'px';
+    }
+}
+
 // Function to make a cell editable
 function makeCellEditable(cell, item, propertyName) {
     cell.addEventListener('dblclick', function() {
@@ -156,6 +229,18 @@ function makeCellEditable(cell, item, propertyName) {
 function renderTable() {
     const tableBody = document.getElementById("shipmentTableBody");
     tableBody.innerHTML = ""; // Clear existing rows
+    console.log('Rendering table with filteredData:', JSON.parse(JSON.stringify(filteredData))); // Log a copy
+
+    if (!filteredData || filteredData.length === 0) {
+        console.log('No data to render in table.');
+        // Optionally, display a message in the table like "No data available"
+        const row = tableBody.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 16; // Number of columns in your table
+        cell.textContent = 'No data to display.';
+        cell.style.textAlign = 'center';
+        return;
+    }
 
     filteredData.forEach(item => { 
         const row = tableBody.insertRow();
@@ -181,12 +266,28 @@ function renderTable() {
         
         const statusCell = row.insertCell();
         const statusSpan = document.createElement("span");
-        // Gracefully handle null or undefined status
+        
         const currentStatus = item.status || ""; // Default to empty string if null/undefined
-        if (typeof currentStatus === 'string' && currentStatus.toLowerCase() === "done") {
-            statusSpan.className = "status-done";
-        }
         statusSpan.textContent = currentStatus;
+        statusSpan.className = 'status-bubble'; // Base class for padding, border-radius etc.
+
+        // Add specific class based on status text (case-insensitive check)
+        const lowerCaseStatus = currentStatus.toLowerCase();
+
+        if (lowerCaseStatus === "done") {
+            statusSpan.classList.add("status-done");
+        } else if (lowerCaseStatus.includes("in progress")) { // Catch variations
+            statusSpan.classList.add("status-in-progress");
+        } else if (lowerCaseStatus === "not started") {
+            statusSpan.classList.add("status-not-started");
+        } else if (lowerCaseStatus === "pending") {
+            statusSpan.classList.add("status-pending");
+        } else if (lowerCaseStatus === "on hold") {
+            statusSpan.classList.add("status-on-hold");
+        } else if (lowerCaseStatus === "cancelled") {
+            statusSpan.classList.add("status-cancelled");
+        } // Add more conditions if needed
+        
         statusCell.appendChild(statusSpan);
         makeCellEditable(statusCell, item, 'status');
 
@@ -294,32 +395,60 @@ async function fetchShipmentsAndRender() {
 
 // Function to sort the table
 function sortTable(columnIndex) {
+    let newSortDirection = 'asc';
+    let previousSortColumn = sortColumn; // Keep track of previous sort
+
     if (sortColumn === columnIndex) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+        if (sortDirection === 'asc') {
+            newSortDirection = 'desc';
+        } else {
+            sortColumn = -1; 
+            newSortDirection = 'asc';
+        }
     } else {
         sortColumn = columnIndex;
-        sortDirection = 'asc';
+        newSortDirection = 'asc';
+    }
+    sortDirection = newSortDirection;
+
+    if (sortColumn === -1) {
+        // Sort reset: Re-render the *current* filteredData without applying a new sort.
+        // We might need to revert to the original order if the user expects that.
+        // For now, just re-render the currently filtered, unsorted data.
+        console.log("Resetting sort. Re-rendering current filtered data.");
+        renderTable(); // Render the existing filteredData as is
+        updateSortIndicators(); // Clear indicators
+        return; // Exit function early
+    }
+    
+    console.log(`Sorting column ${sortColumn} ${sortDirection}`);
+    
+    // Find the data key using the data-column-key attribute
+    const headers = document.querySelectorAll("th");
+    const key = headers[columnIndex]?.dataset.columnKey;
+
+    if (!key) {
+        console.warn(`Cannot sort column index ${columnIndex}, no data-column-key found.`);
+        // Optionally revert sort state if key not found
+        sortColumn = previousSortColumn; 
+        updateSortIndicators();
+        return; // Cannot sort this column
     }
 
     filteredData.sort((a, b) => {
-        // Get values to compare. Adjust keys based on your data structure and column index
-        const keys = Object.keys(initialShipmentData[0]); // Assumes all items have same keys
-        const key = keys[columnIndex];
-        
         let valA = a[key];
         let valB = b[key];
 
-        // Basic numeric sort for columns that look like numbers or currency
+        // --- Existing sorting logic for types --- 
         if (key === 'sPrice' || key === 'grossWeight' || key === 'contractQuantity' || key === 'totalAmount' || key === 'piValue') {
             valA = parseFloat(String(valA).replace(/[^\d.-]/g, '')) || 0;
             valB = parseFloat(String(valB).replace(/[^\d.-]/g, '')) || 0;
+        } else if (key === 'etd' || key === 'eta') {
+            // Placeholder date sort
         }
-        // Basic date sort (very simplified, assumes consistent M D, YYYY format prefix)
-        else if (key === 'etd' || key === 'eta') {
-             // This is a placeholder. Proper date sorting is complex.
-             // For simplicity, we'll compare as strings for now.
-             // To do this properly, parse dates into Date objects.
-        }
+
+        valA = valA === null || valA === undefined ? '' : valA;
+        valB = valB === null || valB === undefined ? '' : valB;
 
         if (typeof valA === 'string') valA = valA.toLowerCase();
         if (typeof valB === 'string') valB = valB.toLowerCase();
@@ -336,7 +465,8 @@ function sortTable(columnIndex) {
 function updateSortIndicators() {
     document.querySelectorAll("th").forEach((th, index) => {
         th.classList.remove('sort-asc', 'sort-desc');
-        if (index === sortColumn) {
+        // Only add indicator if a column is actively sorted
+        if (index === sortColumn && sortColumn !== -1) { 
             th.classList.add(sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
         }
     });
@@ -367,17 +497,46 @@ function addShipment() {
 
 // Function to perform search
 function performSearch() {
-    const searchTerm = document.getElementById("searchInput").value.toLowerCase();
+    const searchInput = document.getElementById("searchInput");
+    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : ""; // Handle if searchInput is not found, trim whitespace
+    console.log(`Performing search with term: '${searchTerm}'`);
+
     if (!searchTerm) {
         filteredData = [...shipmentData];
     } else {
-        filteredData = shipmentData.filter(item => 
-            item.shipmentName.toLowerCase().includes(searchTerm) ||
-            item.oblNo.toLowerCase().includes(searchTerm) ||
-            item.contractNo.toLowerCase().includes(searchTerm) ||
-            item.fclsGoods.toLowerCase().includes(searchTerm)
-        );
+        filteredData = shipmentData.filter(item => {
+            return Object.values(item).some(value => {
+                if (value === null || value === undefined) {
+                    return false;
+                }
+                const stringValue = String(value).toLowerCase();
+                const searchTermLower = searchTerm; // Already lowercase
+
+                // 1. Standard check
+                if (stringValue.includes(searchTermLower)) {
+                    return true;
+                }
+
+                // 2. Comma-insensitive check (if standard check failed)
+                // Always perform this check if the standard one fails
+                const normalizedValue = stringValue.replace(/,/g, '');
+                const normalizedSearch = searchTermLower.replace(/,/g, '');
+
+                // Ensure we don't accidentally match on empty strings if the search term was only commas
+                if (normalizedSearch.length === 0 && searchTermLower.length > 0) {
+                    return false;
+                }
+                
+                if (normalizedValue.includes(normalizedSearch)) {
+                    return true;
+                }
+                
+                return false; // Didn't match either way
+            });
+        });
     }
+    console.log('Filtered data after search:', JSON.parse(JSON.stringify(filteredData))); // Log a copy
+
     // If a sort column is set, re-apply sort after search
     if (sortColumn !== -1) {
         // Temporarily store current sort to re-apply to new filteredData
@@ -406,17 +565,32 @@ document.addEventListener("DOMContentLoaded", () => {
         searchInput.addEventListener("input", performSearch);
     }
 
-    document.querySelectorAll("th").forEach((th, index) => {
-        th.addEventListener("click", () => {
-            sortTable(index);
+    const tableHeaders = document.querySelectorAll("th");
+    tableHeaders.forEach((th, index) => {
+        // Add sort listener
+        th.addEventListener("click", (event) => {
+            // Only sort if the click wasn't on the resize handle
+            if (!event.target.classList.contains('resize-handle')) {
+                sortTable(index);
+            }
         });
+
+        // Add resize handle (except for the last header)
+        if (index < tableHeaders.length - 1) {
+            const handle = document.createElement('div');
+            handle.className = 'resize-handle';
+            handle.addEventListener('mousedown', handleMouseDown);
+            handle.addEventListener('dblclick', handleDoubleClick); // Add dblclick listener
+            th.appendChild(handle);
+        }
     });
-    renderTable(); // Initial render
-    updateSortIndicators(); // Initial indicator setup
 
     const moreOptionsBtn = document.getElementById("moreOptionsBtn");
     const moreOptionsMenu = document.getElementById("moreOptionsMenu");
     const exportCsvBtn = document.getElementById("exportCsvBtn");
+    const filterBtn = document.getElementById("filterBtn"); // Get filter button
+    const filterMenu = document.getElementById("filterMenu"); // Get filter menu
+    const showAllBtn = document.querySelector(".show-all-btn"); // Get Show All button
 
     if (moreOptionsBtn && moreOptionsMenu) {
         moreOptionsBtn.addEventListener("click", (event) => {
@@ -425,12 +599,47 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Hide dropdown if clicked outside
-    document.addEventListener("click", (event) => { // Added event parameter
+    // Listener for Filter button
+    if (filterBtn && filterMenu) {
+        filterBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            // Hide more options menu if open
+            if (moreOptionsMenu && !moreOptionsMenu.classList.contains("hidden")) {
+                 moreOptionsMenu.classList.add("hidden");
+            }
+            filterMenu.classList.toggle("hidden");
+        });
+    }
+
+    // Listener for clicks within the filter menu
+    if (filterMenu) {
+        filterMenu.addEventListener('click', (event) => {
+            if (event.target.tagName === 'A') {
+                event.preventDefault();
+                const filterType = event.target.dataset.filterType;
+                const filterValue = event.target.dataset.filterValue;
+                console.log(`Filter selected - Type: ${filterType}, Value: ${filterValue}`);
+                // TODO: Implement actual filtering logic here
+                // - Update a global filter state variable
+                // - Call a function (e.g., applyFiltersAndSearch) that modifies filteredData
+                // - Re-render the table
+                filterMenu.classList.add('hidden'); // Hide menu after selection
+            }
+        });
+    }
+
+    // Hide dropdowns if clicked outside
+    document.addEventListener("click", (event) => { 
+        // Hide More Options Menu
         if (moreOptionsMenu && !moreOptionsMenu.classList.contains("hidden")) {
-            // Check if the click was outside the moreOptionsBtn and moreOptionsMenu
             if (!moreOptionsBtn.contains(event.target) && !moreOptionsMenu.contains(event.target)) {
                  moreOptionsMenu.classList.add("hidden");
+            }
+        }
+        // Hide Filter Menu
+        if (filterMenu && !filterMenu.classList.contains("hidden")) {
+            if (!filterBtn.contains(event.target) && !filterMenu.contains(event.target)) {
+                 filterMenu.classList.add("hidden");
             }
         }
     });
@@ -440,6 +649,66 @@ document.addEventListener("DOMContentLoaded", () => {
             event.preventDefault(); // Prevent default link behavior
             exportToCSV();
             moreOptionsMenu.classList.add("hidden"); // Hide menu after click
+        });
+    }
+
+    // Add listener for CSV Upload Button
+    const uploadCsvButton = document.getElementById('uploadCsvButton');
+    const csvFileInput = document.getElementById('csvFile');
+
+    if (uploadCsvButton && csvFileInput) {
+        uploadCsvButton.addEventListener('click', async () => {
+            if (csvFileInput.files.length === 0) {
+                alert('Please select a CSV file first.');
+                return;
+            }
+            const file = csvFileInput.files[0];
+            const formData = new FormData();
+            formData.append('csvfile', file); // Match the name expected by multer
+
+            console.log(`Uploading ${file.name}...`);
+            try {
+                const response = await fetch('http://localhost:3000/api/upload-csv', {
+                    method: 'POST',
+                    body: formData,
+                    // Headers are not usually needed for FormData with fetch, browser sets multipart/form-data
+                });
+
+                const responseText = await response.text(); // Read response text
+                console.log('Upload response:', responseText);
+
+                if (!response.ok) {
+                    throw new Error(`Upload failed: ${response.status} - ${responseText}`);
+                }
+
+                alert('CSV uploaded successfully! Refreshing data...');
+                await fetchShipmentsAndRender(); // Re-fetch data and re-render the table
+
+            } catch (error) {
+                console.error('Error uploading CSV:', error);
+                alert(`Error uploading CSV: ${error.message}`);
+            }
+        });
+    }
+
+    // Listener for Show All button
+    if (showAllBtn) {
+        showAllBtn.addEventListener('click', () => {
+            console.log('Show All clicked');
+            // Clear search input
+            if (searchInput) {
+                searchInput.value = '';
+            }
+            // Clear any active filter (we'll need a variable for this later)
+            // console.log('Clearing active filters...'); 
+            // activeFilter = null; 
+            
+            // Reset sort state
+            sortColumn = -1;
+            sortDirection = 'asc';
+
+            // Reset filteredData to full data and re-render
+            performSearch(); // This will reset filter to shipmentData and call render/updateIndicators
         });
     }
 });

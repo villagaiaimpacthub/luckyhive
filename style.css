@@ -131,9 +131,10 @@ h1 {
 }
 
 table {
-    width: 100%;
+    width: 100%; /* Important for fixed layout */
     border-collapse: collapse;
     font-size: 13px;
+    table-layout: fixed; /* Use fixed layout algorithm */
 }
 
 th, td {
@@ -144,11 +145,20 @@ th, td {
 
 th {
     font-weight: 500;
-    color: #A0A0A0; /* Lighter gray for headers */
+    color: #A0A0A0;
     text-transform: uppercase;
     font-size: 11px;
-    cursor: pointer; /* Add pointer cursor to indicate clickable */
-    position: relative; /* For positioning sort indicators */
+    cursor: pointer;
+    position: relative;
+    /* min-width: 100px; */ /* Less relevant with fixed layout, use width */
+    width: 150px; /* Set an initial width for fixed layout */
+    white-space: nowrap; 
+    border-right: 1px solid #444;
+}
+
+th:last-child,
+td:last-child {
+    border-right: none; /* Remove border from the very last column (header and data) */
 }
 
 th.sort-asc::after,
@@ -172,16 +182,61 @@ th.sort-desc::after {
 
 td {
     color: #D0D0D0;
+    /* white-space: nowrap; */ /* REMOVED: Allow cell content to wrap */
+    /* Re-add overflow handling for fixed layout */
+    overflow: hidden; 
+    text-overflow: ellipsis;
+    white-space: nowrap; /* Typically needed with ellipsis, prevents wrapping */
 }
 
-.status-done {
-    background-color: #28A745; /* Green for done status */
+/* Status Bubbles */
+.status-bubble {
     color: white;
     padding: 4px 8px;
     border-radius: 12px;
     font-size: 11px;
     font-weight: 500;
+    display: inline-block; /* Ensure padding and border-radius work well */
 }
+
+.status-done {
+    background-color: #28A745; /* Green */
+}
+
+.status-in-progress {
+    background-color: #007AFF; /* Blue */
+}
+
+.status-not-started {
+    background-color: #8E8E93; /* Medium Gray */
+}
+
+.status-pending {
+    background-color: #6C757D; /* Darker Gray */
+}
+
+.status-on-hold {
+    background-color: #FF9500; /* Orange */
+}
+
+.status-cancelled {
+    background-color: #FF3B30; /* Red */
+}
+
+/* Selected row status adjustments */
+.selected-row .status-bubble {
+    color: white !important; /* Ensure text remains white */
+    border: 1px solid #005A9E; /* Add border to match selection */
+}
+
+/* Override background for selected state if needed, or keep original */
+/* Example: Keep original background even when selected */
+.selected-row .status-done { background-color: #28A745 !important; }
+.selected-row .status-in-progress { background-color: #007AFF !important; }
+.selected-row .status-not-started { background-color: #8E8E93 !important; }
+.selected-row .status-pending { background-color: #6C757D !important; }
+.selected-row .status-on-hold { background-color: #FF9500 !important; }
+.selected-row .status-cancelled { background-color: #FF3B30 !important; }
 
 /* Minimalist scrollbar for webkit browsers */
 ::-webkit-scrollbar {
@@ -311,4 +366,35 @@ td {
     font-size: inherit;
     box-sizing: border-box;
     border-radius: 3px;
+}
+
+/* Styles for Column Resizing */
+th {
+    position: relative; /* Needed for absolute positioning of handle */
+}
+
+.resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0; /* Align handle with the right border */
+    width: 3px; /* Make handle thinner */
+    height: 100%;
+    cursor: col-resize;
+    z-index: 1;
+    background-color: #555; /* Give handle a default visible color */
+    opacity: 0.5; /* Make it slightly transparent by default */
+    transition: background-color 0.2s ease, opacity 0.2s ease; 
+}
+
+.resize-handle:hover {
+    opacity: 1; /* Make fully opaque on hover */
+}
+
+/* Style when actively resizing */
+th.th-resizing .resize-handle {
+    background-color: #007AFF; /* Highlight handle with accent color during drag */
+    opacity: 1; /* Ensure it's fully opaque */
+    /* Optional: Make the handle slightly wider during drag */
+    /* width: 5px; */
+    /* right: -1px; */
 } 

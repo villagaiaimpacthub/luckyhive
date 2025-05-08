@@ -3,11 +3,16 @@ const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const multer = require('multer'); // For handling file uploads
 const fs = require('fs'); // For reading file content if multer saves to disk (not used with memoryStorage)
+const { parse } = require('csv-parse/sync'); // Import the synchronous parser
 
 console.log('Starting server.js...');
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// --- Temporary storage for CSV processing report ---
+let lastCsvProcessingReport = { status: "No CSV processed yet." };
+// --- End temporary storage ---
 
 // Serve static files (index.html, script.js, style.css) from the current directory
 app.use(express.static(__dirname)); 
@@ -93,93 +98,133 @@ app.get('/api/shipments', (req, res) => {
 // API endpoint for CSV Upload
 app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
     console.log('POST /api/upload-csv request received');
+    // Reset report for current upload
+    currentProcessingReport = {
+        fileName: req.file ? req.file.originalname : 'N/A',
+        fileSize: req.file ? req.file.size : 'N/A',
+        timestamp: new Date().toISOString(),
+        status: 'Processing',
+        parsedHeaders: [],
+        firstFewRawRecords: [],
+        firstFewMappedRows: [],
+        insertedRowCount: 0,
+        errors: []
+    };
+
     if (!req.file) {
         console.log('No file uploaded.');
+        currentProcessingReport.status = 'Error: No file uploaded.';
+        currentProcessingReport.errors.push('No file was received by the server.');
+        lastCsvProcessingReport = currentProcessingReport;
         return res.status(400).send('No file uploaded.');
     }
 
     console.log('File received:', req.file.originalname, 'Size:', req.file.size);
 
-    // File content is in req.file.buffer
-    const csvData = req.file.buffer.toString('utf8');
-    const lines = csvData.split(/\r?\n/); // Split by newline, handling Windows and Unix endings
+    try {
+        const fileContent = req.file.buffer.toString('utf8');
+        const records = parse(fileContent, {
+            columns: true, // Treat the first row as column headers
+            skip_empty_lines: true,
+            trim: true,
+        });
 
-    if (lines.length <= 1) {
-        console.log('CSV file is empty or has only a header.');
-        return res.status(400).send('CSV file is empty or has only a header.');
-    }
+        if (!records || records.length === 0) {
+            console.log('CSV file is empty or contains no data rows after parsing.');
+            currentProcessingReport.status = 'Error: CSV empty or no data rows after parsing.';
+            lastCsvProcessingReport = currentProcessingReport;
+            return res.status(400).send('CSV file is empty or contains no data rows.');
+        }
 
-    // Assume first line is the header
-    const headers = lines[0].split(',').map(h => h.trim());
-    // These are the expected DB column names (excluding id)
-    const dbColumns = [
-        'shipmentName', 'oblNo', 'status', 'contractNo', 'piNo', 'piValue',
-        'invoiceNo', 'fclsGoods', 'shippingLine', 'etd', 'eta', 'sPrice',
-        'grossWeight', 'contractQuantity', 'totalAmount'
-    ];
+        if (records.length > 0) {
+            currentProcessingReport.parsedHeaders = Object.keys(records[0]);
+            console.log("Headers found by csv-parse from CSV's first row:", currentProcessingReport.parsedHeaders);
+        }
+        currentProcessingReport.firstFewRawRecords = records.slice(0, 3); // Store first 3 raw records
 
-    // Basic validation: check if headers roughly match (can be improved)
-    if (headers.length < dbColumns.length * 0.8) { // Heuristic: at least 80% of columns should be there
-        console.warn('CSV headers do not seem to match expected columns. Headers:', headers);
-        // return res.status(400).send('CSV headers do not match expected format.');
-    }
+        // These are the expected DB column names (excluding id)
+        const dbColumns = [
+            'shipmentName', 'oblNo', 'status', 'contractNo', 'piNo', 'piValue',
+            'invoiceNo', 'fclsGoods', 'shippingLine', 'etd', 'eta', 'sPrice',
+            'grossWeight', 'contractQuantity', 'totalAmount'
+        ];
 
-    const dataRows = lines.slice(1).filter(line => line.trim() !== ''); // Skip header, remove empty lines
-
-    db.serialize(() => {
-        db.run("BEGIN TRANSACTION;");
-        db.run("DELETE FROM shipments;", (err) => {
-            if (err) {
-                console.error('Error deleting old shipments:', err.message);
-                db.run("ROLLBACK;");
-                return res.status(500).send('Error clearing old data.');
-            }
-            console.log('Old shipments deleted.');
-
-            const stmt = db.prepare(`INSERT INTO shipments (
-                ${dbColumns.join(', ')}
-            ) VALUES (${dbColumns.map(() => '?').join(', ')})`);
-
-            let successfullyInsertedCount = 0;
-            console.log('---- BEGIN CSV ROW PROCESSING ----');
-            for (const row of dataRows) {
-                const values = row.split(',').map(v => v.trim());
-                const rowValuesForDb = dbColumns.map((col, index) => values[index] || null);
-                
-                // Detailed log for each row to be inserted
-                console.log(`Preparing to insert:`);
-                dbColumns.forEach((colName, idx) => {
-                    console.log(`  ${colName} (CSV Col ${idx+1}): ${rowValuesForDb[idx]} (Original CSV value: ${values[idx]})`);
-                });
-
-                stmt.run(rowValuesForDb, function(err) {
-                    if (err) {
-                        console.warn(`Error inserting row: ${rowValuesForDb}, Error: ${err.message}`);
-                        // Decide if you want to stop on error or continue
-                    } else {
-                        successfullyInsertedCount++;
-                    }
-                });
-            }
-            console.log('---- END CSV ROW PROCESSING ----');
-
-            stmt.finalize((err) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+            db.run("DELETE FROM shipments;", (err) => {
                 if (err) {
-                    console.error('Error finalizing statement:', err.message);
+                    console.error('Error deleting old shipments:', err.message);
                     db.run("ROLLBACK;");
-                    return res.status(500).send('Error finalizing data insertion.');
+                    return res.status(500).send('Error clearing old data.');
                 }
-                db.run("COMMIT;", (commitErr) => {
-                    if (commitErr) {
-                        console.error('Error committing transaction:', commitErr.message);
-                        return res.status(500).send('Error committing data.');
+                console.log('Old shipments deleted.');
+
+                const stmt = db.prepare(`INSERT INTO shipments (
+                    ${dbColumns.join(', ')}
+                ) VALUES (${dbColumns.map(() => '?').join(', ')})`);
+
+                console.log('---- BEGIN CSV ROW PROCESSING (using csv-parse) ----');
+                for (const record of records) {
+                    const rowValuesForDb = dbColumns.map(colName => {
+                        let value = null;
+                        const matchingKey = Object.keys(record).find(csvHeader => 
+                            csvHeader.toLowerCase().replace(/\s+/g, '') === colName.toLowerCase().replace(/\s+/g, '')
+                        );
+                        if (matchingKey) value = record[matchingKey];
+                        return value || null;
+                    });
+
+                    if (currentProcessingReport.firstFewMappedRows.length < 3) {
+                        let mappedDetail = {};
+                        dbColumns.forEach((colName, idx) => mappedDetail[colName] = rowValuesForDb[idx]);
+                        currentProcessingReport.firstFewMappedRows.push(mappedDetail);
                     }
-                    console.log(`Successfully inserted ${successfullyInsertedCount} rows from CSV.`);
-                    res.send(`Successfully uploaded and processed ${successfullyInsertedCount} rows from ${req.file.originalname}.`);
+                    
+                    stmt.run(rowValuesForDb, function(err) {
+                        if (err) {
+                            console.warn(`Error inserting row: ${rowValuesForDb}, Error: ${err.message}`);
+                            currentProcessingReport.errors.push({ Erorr: err.message, values: rowValuesForDb });
+                        } else {
+                            currentProcessingReport.insertedRowCount++;
+                        }
+                    });
+                }
+                console.log('---- END CSV ROW PROCESSING ----');
+
+                stmt.finalize((err) => {
+                    if (err) {
+                        console.error('Error finalizing statement:', err.message);
+                        db.run("ROLLBACK;");
+                        return res.status(500).send('Error finalizing data insertion.');
+                    }
+                    db.run("COMMIT;", (commitErr) => {
+                        if (commitErr) {
+                            console.error('Error committing transaction:', commitErr.message);
+                            return res.status(500).send('Error committing data.');
+                        }
+                        currentProcessingReport.status = 'Success';
+                        lastCsvProcessingReport = currentProcessingReport;
+                        console.log(`Successfully inserted ${currentProcessingReport.insertedRowCount} rows from CSV.`);
+                        res.send(`Successfully uploaded and processed ${currentProcessingReport.insertedRowCount} rows from ${req.file.originalname}.`);
+                    });
                 });
             });
         });
-    });
+    } catch (parseError) {
+        console.error('Error parsing CSV:', parseError.message);
+        currentProcessingReport.status = 'Error: CSV Parsing Failed.';
+        currentProcessingReport.errors.push({ error: parseError.message, details: parseError.toString()});
+        lastCsvProcessingReport = currentProcessingReport;
+        res.status(400).send(`Error parsing CSV: ${parseError.message}`);
+    }
+});
+
+// New endpoint for CSV processing diagnostics
+app.get('/api/csv-processing-report', (req, res) => {
+    console.log('GET /api/csv-processing-report request received');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store'); // Ensure fresh report
+    res.json(lastCsvProcessingReport);
 });
 
 // Route to serve a simple HTML form for testing CSV upload
