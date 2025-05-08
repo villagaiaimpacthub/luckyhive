@@ -1,0 +1,314 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #1E1E1E; /* Dark background */
+    color: #E0E0E0; /* Light text */
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    background-color: #2D2D2D; /* Slightly lighter dark for container */
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #444;
+}
+
+.title-bar {
+    display: flex;
+    align-items: center;
+}
+
+.title-icon {
+    font-size: 24px;
+    margin-right: 10px;
+}
+
+h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+}
+
+.actions button,
+.actions .icon-buttons span {
+    background-color: #3C3C3C;
+    color: #E0E0E0;
+    border: 1px solid #555;
+    padding: 8px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-left: 8px;
+    font-size: 14px;
+}
+
+.actions .new-btn {
+    background-color: #007AFF; /* Blue for New button */
+    color: white;
+    border-color: #007AFF;
+}
+
+.actions .new-btn span {
+    margin-left: 5px;
+}
+
+.actions .icon-buttons {
+    display: flex;
+    align-items: center;
+}
+
+.actions .icon-buttons span {
+    padding: 8px;
+}
+
+#searchInput {
+    padding: 8px 10px;
+    border: 1px solid #555;
+    background-color: #3C3C3C;
+    color: #E0E0E0;
+    border-radius: 5px;
+    font-size: 14px;
+    margin-left: 8px;
+    width: 150px; /* Adjust as needed */
+}
+
+#searchInput::placeholder {
+    color: #888;
+}
+
+/* More Options Dropdown */
+.more-options {
+    position: relative;
+    display: inline-block;
+}
+
+.icon-button {
+    background-color: #3C3C3C;
+    color: #E0E0E0;
+    border: 1px solid #555;
+    padding: 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-left: 8px;
+    font-size: 14px;
+}
+
+.dropdown-menu {
+    position: absolute;
+    right: 0;
+    top: 100%; /* Position below the button */
+    background-color: #4A4A4A; /* Slightly lighter than other buttons for distinction */
+    border: 1px solid #555;
+    border-radius: 5px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 1000;
+    min-width: 150px; /* Adjust as needed */
+    padding: 5px 0;
+}
+
+.dropdown-menu.hidden {
+    display: none;
+}
+
+.dropdown-menu a {
+    display: block;
+    padding: 8px 15px;
+    text-decoration: none;
+    color: #E0E0E0;
+    font-size: 13px;
+}
+
+.dropdown-menu a:hover {
+    background-color: #5A5A5A;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+th, td {
+    text-align: left;
+    padding: 10px 8px;
+    border-bottom: 1px solid #444; /* Darker lines for rows */
+}
+
+th {
+    font-weight: 500;
+    color: #A0A0A0; /* Lighter gray for headers */
+    text-transform: uppercase;
+    font-size: 11px;
+    cursor: pointer; /* Add pointer cursor to indicate clickable */
+    position: relative; /* For positioning sort indicators */
+}
+
+th.sort-asc::after,
+th.sort-desc::after {
+    content: '';
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    margin-top: -4px; /* Adjust based on arrow size */
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+}
+
+th.sort-asc::after {
+    border-bottom: 5px solid #E0E0E0; /* Arrow up */
+}
+
+th.sort-desc::after {
+    border-top: 5px solid #E0E0E0; /* Arrow down */
+}
+
+td {
+    color: #D0D0D0;
+}
+
+.status-done {
+    background-color: #28A745; /* Green for done status */
+    color: white;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+/* Minimalist scrollbar for webkit browsers */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #2D2D2D;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #666;
+}
+
+.csv-upload-section {
+    margin-bottom: 20px; /* Add some space below the upload section */
+    display: flex;
+    align-items: center;
+}
+
+#uploadCsvButton {
+    background-color: #3C3C3C;
+    color: #E0E0E0;
+    border: 1px solid #555;
+    padding: 8px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-left: 8px; /* Space between file input and button */
+    font-size: 14px;
+}
+
+#uploadCsvButton:hover {
+    background-color: #4C4C4C; /* Slightly lighter on hover */
+}
+
+/* Basic styling for the file input to blend in a bit */
+#csvFile {
+    color: #E0E0E0; /* Light text for the file name */
+    font-size: 14px;
+    padding: 6px; /* Adjust padding */
+    border-radius: 5px;
+    border: 1px solid #555;
+    background-color: #3C3C3C; /* Changed from #2D2D2D to match buttons */
+}
+
+/* Custom styling for the file input button part (works in WebKit/Blink browsers) */
+#csvFile::file-selector-button {
+    background-color: #3C3C3C;
+    color: #E0E0E0;
+    border: 1px solid #555;
+    padding: 8px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-right: 8px; /* Space between the pseudo-button and the file name text */
+    font-size: 14px;
+    transition: background-color 0.2s ease;
+}
+
+#csvFile::file-selector-button:hover {
+    background-color: #4C4C4C;
+}
+
+#csvDisplayArea {
+    margin-top: 20px;
+    /* Styles for the display area will be added later,
+       likely involving table styling if we display CSV as a table */
+}
+
+/* Styles for Notion-like interactions */
+.selected-row td {
+    background-color: #005A9E !important; /* Notion-like blue */
+    color: white !important;
+}
+
+.selected-row .status-done {
+    background-color: #28A745 !important; /* Keep original green */
+    color: white !important;
+    border: 1px solid #005A9E; /* Optional: border to match selection color */
+}
+
+.delete-row-btn {
+    background: none;
+    border: none;
+    color: #E0E0E0;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 5px;
+}
+
+.delete-row-btn:hover {
+    color: #FF6B6B; /* Red on hover */
+}
+
+.selected-row .delete-row-btn {
+    color: white; /* Ensure visibility on selected row */
+}
+
+.selected-row .delete-row-btn:hover {
+    color: #FF8F8F; /* Lighter red on hover for selected row */
+}
+
+.inline-edit-input {
+    width: 95%;
+    padding: 5px;
+    margin: 0;
+    border: 1px solid #007AFF;
+    background-color: #4A4A4A;
+    color: #E0E0E0;
+    font-family: inherit;
+    font-size: inherit;
+    box-sizing: border-box;
+}
+
+.inline-edit-select {
+    padding: 5px;
+    margin: 0;
+    border: 1px solid #007AFF;
+    background-color: #4A4A4A;
+    color: #E0E0E0;
+    font-family: inherit;
+    font-size: inherit;
+    box-sizing: border-box;
+    border-radius: 3px;
+} 

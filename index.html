@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shipping Schedule 2025</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="title-bar">
+                <span class="title-icon">🚚</span>
+                <h1>shipping schedule. 2025</h1>
+            </div>
+            <div class="actions">
+                <div class="icon-buttons">
+                    <button class="show-all-btn">Show All</button>
+                    <span>⇅</span>
+                    <span> filtro </span>
+                    <input type="text" id="searchInput" placeholder="Search...">
+                    <span>🔍</span>
+                    <div class="more-options">
+                        <button id="moreOptionsBtn" class="icon-button">...</button>
+                        <div id="moreOptionsMenu" class="dropdown-menu hidden">
+                            <a href="#" id="exportCsvBtn">Export to CSV</a>
+                            <!-- Add other options here -->
+                        </div>
+                    </div>
+                    <button class="new-btn">New <span>▼</span></button>
+                </div>
+            </div>
+        </header>
+        <div class="csv-upload-section">
+            <input type="file" id="csvFile" accept=".csv">
+            <button id="uploadCsvButton">Upload and Display CSV</button>
+        </div>
+        <div id="csvDisplayArea">
+            <!-- Uploaded CSV data will be displayed here -->
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Aa Shipment Name</th>
+                    <th>OBL No.</th>
+                    <th>Status</th>
+                    <th>CONTRACT NO.</th>
+                    <th>PI NO.</th>
+                    <th>PI VALUE</th>
+                    <th>INVOICE NO.</th>
+                    <th>FCLs Goods</th>
+                    <th>Shipping Line</th>
+                    <th>ETD</th>
+                    <th>ETA</th>
+                    <th>S. Price</th>
+                    <th>GROSS WEIGHT</th>
+                    <th>Contract Quantity/MT</th>
+                    <th>Total Amount</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="shipmentTableBody">
+                <!-- Table rows will be dynamically inserted here by script.js -->
+            </tbody>
+        </table>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 

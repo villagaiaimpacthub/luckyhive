@@ -1,0 +1,15 @@
+{
+    "watch": ["*.js", "*.mjs", "*.cjs", "*.json"],
+    "ext": "js,mjs,cjs,json",
+    "ignore": [
+        "node_modules", 
+        ".git", 
+        "*.test.js", 
+        "*.spec.js", 
+        "*.md",
+        "*.db",
+        "*.db-journal"
+    ],
+    "delay": "1000",
+    "verbose": true
+} 
