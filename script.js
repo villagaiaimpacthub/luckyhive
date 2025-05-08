@@ -332,12 +332,30 @@ function renderTable() {
         makeCellEditable(cellGrossWeight, item, 'grossWeight');
 
         const cellContractQuantity = row.insertCell();
-        cellContractQuantity.textContent = item.contractQuantity;
-        makeCellEditable(cellContractQuantity, item, 'contractQuantity');
+        cellContractQuantity.textContent = item.contractQuantityMT;
+        makeCellEditable(cellContractQuantity, item, 'contractQuantityMT');
         
         const cellTotalAmount = row.insertCell();
         cellTotalAmount.textContent = item.totalAmount;
         makeCellEditable(cellTotalAmount, item, 'totalAmount');
+
+        // Add cells for the remaining 15 columns
+        row.insertCell().textContent = item.provisionalInvoiceValue;
+        row.insertCell().textContent = item.finalInvoiceBalance;
+        row.insertCell().textContent = item.polZnPercent;
+        row.insertCell().textContent = item.podZnPercent;
+        row.insertCell().textContent = item.polMoisture;
+        row.insertCell().textContent = item.podMoisture;
+        row.insertCell().textContent = item.lmePi;
+        row.insertCell().textContent = item.lmePol;
+        row.insertCell().textContent = item.lmePod;
+        row.insertCell().textContent = item.trackingNo;
+        row.insertCell().textContent = item.dueDate;
+        row.insertCell().textContent = item.laboratoryReport;
+        row.insertCell().textContent = item.shippingDocsProvisional;
+        row.insertCell().textContent = item.shippingDocsFinalDocs;
+        row.insertCell().textContent = item.lastEditedTime;
+        // Add makeCellEditable for these new cells if needed later
 
         // Actions cell (for delete button)
         const actionsCell = row.insertCell();
@@ -371,8 +389,8 @@ function renderTable() {
 async function fetchShipmentsAndRender() {
     console.log('Fetching shipment data from backend...');
     try {
-        // Added cache-busting query parameter and no-store cache option
-        const response = await fetch('http://localhost:3000/api/shipments?t=' + new Date().getTime(), {
+        // Use relative URL
+        const response = await fetch('/api/shipments?t=' + new Date().getTime(), {
             cache: 'no-store' 
         });
         if (!response.ok) {
@@ -440,7 +458,7 @@ function sortTable(columnIndex) {
         let valB = b[key];
 
         // --- Existing sorting logic for types --- 
-        if (key === 'sPrice' || key === 'grossWeight' || key === 'contractQuantity' || key === 'totalAmount' || key === 'piValue') {
+        if (key === 'sPrice' || key === 'grossWeight' || key === 'contractQuantityMT' || key === 'totalAmount' || key === 'piValue') {
             valA = parseFloat(String(valA).replace(/[^\d.-]/g, '')) || 0;
             valB = parseFloat(String(valB).replace(/[^\d.-]/g, '')) || 0;
         } else if (key === 'etd' || key === 'eta') {
@@ -668,10 +686,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
             console.log(`Uploading ${file.name}...`);
             try {
-                const response = await fetch('http://localhost:3000/api/upload-csv', {
+                // Use relative URL
+                const response = await fetch('/api/upload-csv', {
                     method: 'POST',
                     body: formData,
-                    // Headers are not usually needed for FormData with fetch, browser sets multipart/form-data
                 });
 
                 const responseText = await response.text(); // Read response text

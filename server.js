@@ -1,3 +1,5 @@
+console.log("--- Executing server.js: Line 1 ---");
+
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
@@ -55,8 +57,23 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         eta TEXT,
         sPrice TEXT,
         grossWeight TEXT,
-        contractQuantity TEXT,
-        totalAmount TEXT
+        contractQuantityMT TEXT,
+        totalAmount TEXT,
+        provisionalInvoiceValue TEXT,
+        finalInvoiceBalance TEXT,
+        polZnPercent TEXT,
+        podZnPercent TEXT,
+        polMoisture TEXT,
+        podMoisture TEXT,
+        lmePi TEXT,
+        lmePol TEXT,
+        lmePod TEXT,
+        trackingNo TEXT,
+        dueDate TEXT,
+        laboratoryReport TEXT,
+        shippingDocsProvisional TEXT,
+        shippingDocsFinalDocs TEXT,
+        lastEditedTime TEXT
     )`, (err) => {
         if (err) {
             console.error("Error creating shipments table", err.message);
@@ -142,12 +159,37 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
         }
         currentProcessingReport.firstFewRawRecords = records.slice(0, 3); // Store first 3 raw records
 
-        // These are the expected DB column names (excluding id)
+        // Define expected DB column names (ALL 30 based on CSV headers)
         const dbColumns = [
             'shipmentName', 'oblNo', 'status', 'contractNo', 'piNo', 'piValue',
             'invoiceNo', 'fclsGoods', 'shippingLine', 'etd', 'eta', 'sPrice',
-            'grossWeight', 'contractQuantity', 'totalAmount'
+            'grossWeight', 'contractQuantityMT', 'totalAmount',
+            'provisionalInvoiceValue', 'finalInvoiceBalance', 
+            'polZn', // Was polZnPercent, to match " POL ZN%" -> polzn
+            'podZn', // Was podZnPercent, to match "POD ZN%" -> podzn
+            'polMoisture', 'podMoisture', 'lmePi', 'lmePol', 'lmePod',
+            'tracking', // Was trackingNo, to match "Tracking # " -> tracking
+            'dueDate', 'laboratoryReport', 
+            // For "  Shipping Docs/ provisional hipping Docs/ provisional " -> shippingdocsprovisionalhippingdocsprovisional
+            // We need a DB column that normalizes to this.
+            // The existing 'shippingDocsProvisional' normalizes to 'shippingdocsprovisional'.
+            // This is tricky due to the repetition in the CSV header.
+            // Let's assume the *intent* was for the shorter 'shippingDocsProvisional'.
+            // If the CSV header is consistently "  Shipping Docs/ provisional hipping Docs/ provisional ",
+            // and we want it to map to the DB column 'shippingDocsProvisional',
+            // then the current normalization will NOT work for this specific header.
+            // We will address this specific one after seeing if the others work.
+            // For now, we keep 'shippingDocsProvisional' and acknowledge it might not pick up that specific CSV header.
+            'shippingDocsProvisional', 
+            'shippingDocsFinalDocs', 'lastEditedTime'
         ];
+
+        // Helper function to normalize keys for matching
+        const normalizeKey = (key) => {
+            if (typeof key !== 'string') return '';
+            // Remove BOM, lowercase, then remove ALL non-alphanumeric chars
+            return key.replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        };
 
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -167,8 +209,10 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
                 for (const record of records) {
                     const rowValuesForDb = dbColumns.map(colName => {
                         let value = null;
+                        // Use the improved normalizeKey for matching
+                        const targetNormalizedKey = normalizeKey(colName);
                         const matchingKey = Object.keys(record).find(csvHeader => 
-                            csvHeader.toLowerCase().replace(/\s+/g, '') === colName.toLowerCase().replace(/\s+/g, '')
+                            normalizeKey(csvHeader) === targetNormalizedKey
                         );
                         if (matchingKey) value = record[matchingKey];
                         return value || null;
