@@ -19,4 +19,11 @@ yarn-error.log
 .Trashes
 Icon?
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Python
+llm_data_service/.env
+llm_data_service/__pycache__/
+llm_data_service/*.pyc
+llm_data_service/.venv/
+llm_data_service/venv/ 

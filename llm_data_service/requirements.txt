@@ -1,0 +1,4 @@
+Flask>=2.0
+python-dotenv>=0.19
+anthropic>=0.20 # For Anthropic Claude API
+# Add other specific dependencies as needed, e.g., for database if not using built-in sqlite3 
