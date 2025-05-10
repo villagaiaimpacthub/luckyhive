@@ -6,6 +6,7 @@ const cors = require('cors');
 const multer = require('multer'); // For handling file uploads
 const fs = require('fs'); // For reading file content if multer saves to disk (not used with memoryStorage)
 const { parse } = require('csv-parse/sync'); // Import the synchronous parser
+const axios = require('axios'); // Added for making HTTP requests to Python service
 
 console.log('Starting server.js...');
 
@@ -165,30 +166,31 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
             'invoiceNo', 'fclsGoods', 'shippingLine', 'etd', 'eta', 'sPrice',
             'grossWeight', 'contractQuantityMT', 'totalAmount',
             'provisionalInvoiceValue', 'finalInvoiceBalance', 
-            'polZn', // Was polZnPercent, to match " POL ZN%" -> polzn
-            'podZn', // Was podZnPercent, to match "POD ZN%" -> podzn
+            'polZnPercent',
+            'podZnPercent',
             'polMoisture', 'podMoisture', 'lmePi', 'lmePol', 'lmePod',
-            'tracking', // Was trackingNo, to match "Tracking # " -> tracking
+            'trackingNo',
             'dueDate', 'laboratoryReport', 
-            // For "  Shipping Docs/ provisional hipping Docs/ provisional " -> shippingdocsprovisionalhippingdocsprovisional
-            // We need a DB column that normalizes to this.
-            // The existing 'shippingDocsProvisional' normalizes to 'shippingdocsprovisional'.
-            // This is tricky due to the repetition in the CSV header.
-            // Let's assume the *intent* was for the shorter 'shippingDocsProvisional'.
-            // If the CSV header is consistently "  Shipping Docs/ provisional hipping Docs/ provisional ",
-            // and we want it to map to the DB column 'shippingDocsProvisional',
-            // then the current normalization will NOT work for this specific header.
-            // We will address this specific one after seeing if the others work.
-            // For now, we keep 'shippingDocsProvisional' and acknowledge it might not pick up that specific CSV header.
             'shippingDocsProvisional', 
             'shippingDocsFinalDocs', 'lastEditedTime'
         ];
 
-        // Helper function to normalize keys for matching
         const normalizeKey = (key) => {
             if (typeof key !== 'string') return '';
-            // Remove BOM, lowercase, then remove ALL non-alphanumeric chars
             return key.replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        };
+
+        // More explicit mapping for problematic CSV headers to DB column names
+        // DB Column Name (from dbColumns) : Expected Normalized CSV Header
+        const explicitHeaderMappings = {
+            'polZnPercent': 'polzn', // ' POL ZN%' normalizes to 'polzn'
+            'podZnPercent': 'podzn', // 'POD ZN%' normalizes to 'podzn'
+            'trackingNo': 'tracking',  // 'Tracking # ' normalizes to 'tracking'
+            'shippingDocsProvisional': 'shippingdocsprovisionalhippingdocsprovisional' 
+            // '  Shipping Docs/ provisional hipping Docs/ provisional ' normalizes to 'shippingdocsprovisionalhippingdocsprovisional'
+            // This will now map to the DB column 'shippingDocsProvisional'. 
+            // If the intent was that 'shippingDocsProvisional' DB column should ONLY get data from a simple 'Shipping Docs Provisional' CSV header,
+            // then this mapping might be too greedy. However, it addresses the complex header.
         };
 
         db.serialize(() => {
@@ -207,14 +209,28 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
 
                 console.log('---- BEGIN CSV ROW PROCESSING (using csv-parse) ----');
                 for (const record of records) {
-                    const rowValuesForDb = dbColumns.map(colName => {
+                    const rowValuesForDb = dbColumns.map(dbColName => {
                         let value = null;
-                        // Use the improved normalizeKey for matching
-                        const targetNormalizedKey = normalizeKey(colName);
-                        const matchingKey = Object.keys(record).find(csvHeader => 
-                            normalizeKey(csvHeader) === targetNormalizedKey
-                        );
-                        if (matchingKey) value = record[matchingKey];
+                        const normalizedDbColName = normalizeKey(dbColName);
+                        
+                        // Check for an explicit mapping first
+                        const explicitTargetNormalizedCsvKey = explicitHeaderMappings[dbColName];
+
+                        let foundCsvHeaderKey;
+                        if (explicitTargetNormalizedCsvKey) {
+                            foundCsvHeaderKey = Object.keys(record).find(csvHeader => 
+                                normalizeKey(csvHeader) === explicitTargetNormalizedCsvKey
+                            );
+                        } else {
+                            // Standard matching: normalized CSV header matches normalized DB column name
+                            foundCsvHeaderKey = Object.keys(record).find(csvHeader => 
+                                normalizeKey(csvHeader) === normalizedDbColName
+                            );
+                        }
+                        
+                        if (foundCsvHeaderKey) {
+                            value = record[foundCsvHeaderKey];
+                        }
                         return value || null;
                     });
 
@@ -260,6 +276,50 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
         currentProcessingReport.errors.push({ error: parseError.message, details: parseError.toString()});
         lastCsvProcessingReport = currentProcessingReport;
         res.status(400).send(`Error parsing CSV: ${parseError.message}`);
+    }
+});
+
+// API endpoint for LLM Querying - delegates to Python service
+app.post('/api/llm-query', async (req, res) => {
+    console.log('POST /api/llm-query request received');
+    const { question } = req.body;
+
+    if (!question) {
+        return res.status(400).json({ error: 'Missing \'question\' in request body' });
+    }
+
+    const pythonServiceUrl = 'http://localhost:5001/query'; // URL of your Python Flask service
+
+    try {
+        console.log(`Forwarding question to Python service: ${question}`);
+        const pythonResponse = await axios.post(pythonServiceUrl, {
+            question: question
+        });
+
+        // Relay the Python service's response back to the client
+        console.log('Received response from Python service.');
+        res.json(pythonResponse.data);
+
+    } catch (error) {
+        console.error('Error calling Python service:', error.message);
+        let errorMsg = 'Error communicating with the LLM data service.';
+        let statusCode = 500;
+
+        if (error.response) {
+            // The request was made and the server responded with a status code
+            // that falls out of the range of 2xx
+            console.error('Python service responded with error:', error.response.data);
+            errorMsg = error.response.data.error || errorMsg; // Use error from Python service if available
+            statusCode = error.response.status || statusCode;
+        } else if (error.request) {
+            // The request was made but no response was received
+            console.error('No response received from Python service:', error.request);
+            errorMsg = 'No response from LLM data service. Ensure it is running.';
+        } else {
+            // Something happened in setting up the request that triggered an Error
+            console.error('Error setting up request to Python service:', error.message);
+        }
+        res.status(statusCode).json({ error: errorMsg, details: error.message });
     }
 });
 

@@ -26,7 +26,8 @@ let selectedRowElement = null; // Added for row selection
 // ];
 
 let shipmentData = []; // Will be populated from backend
-let filteredData = []; // Will be populated from backend or based on shipmentData
+let hiveFilteredDataSnapshot = null; // Holds data from the last HIVE query that returned a table
+let filteredData = []; // Data currently displayed in the main table, after all filters
 let sortColumn = -1; // -1 means no sort, or use a default like 0 for first column
 let sortDirection = 'asc'; // 'asc' or 'desc'
 
@@ -229,7 +230,7 @@ function makeCellEditable(cell, item, propertyName) {
 function renderTable() {
     const tableBody = document.getElementById("shipmentTableBody");
     tableBody.innerHTML = ""; // Clear existing rows
-    console.log('Rendering table with filteredData:', JSON.parse(JSON.stringify(filteredData))); // Log a copy
+    console.log('renderTable: Starting to render main table with filteredData (count: ' + (filteredData ? filteredData.length : 0) + '):', JSON.parse(JSON.stringify(filteredData || [])));
 
     if (!filteredData || filteredData.length === 0) {
         console.log('No data to render in table.');
@@ -389,7 +390,6 @@ function renderTable() {
 async function fetchShipmentsAndRender() {
     console.log('Fetching shipment data from backend...');
     try {
-        // Use relative URL
         const response = await fetch('/api/shipments?t=' + new Date().getTime(), {
             cache: 'no-store' 
         });
@@ -398,16 +398,16 @@ async function fetchShipmentsAndRender() {
         }
         const data = await response.json();
         console.log('Data received from backend:', data);
-        shipmentData = data; // Populate with data from server
-        // Initial filter/sort state after fetching data
-        performSearch(); // This will set filteredData and call renderTable with current sort
+        shipmentData = data; 
+        hiveFilteredDataSnapshot = null; // Reset HIVE snapshot on full fetch
+        // No need to set filteredData directly here, performSearch will handle it.
+        performSearch(); 
     } catch (error) {
         console.error("Could not fetch shipments:", error);
-        // Optionally, display an error message to the user on the page
-        // For now, table might just appear empty or with old data if any
-        shipmentData = []; // Ensure it's empty on error
+        shipmentData = []; 
+        hiveFilteredDataSnapshot = null;
         filteredData = [];
-        renderTable(); // Render an empty or error state table
+        renderTable(); 
     }
 }
 
@@ -516,57 +516,66 @@ function addShipment() {
 // Function to perform search
 function performSearch() {
     const searchInput = document.getElementById("searchInput");
-    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : ""; // Handle if searchInput is not found, trim whitespace
+    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : "";
     console.log(`Performing search with term: '${searchTerm}'`);
 
+    let baseData = hiveFilteredDataSnapshot ? [...hiveFilteredDataSnapshot] : [...shipmentData];
+    console.log('performSearch: Using baseData count:', baseData.length, 'Is HIVE snapshot active?', !!hiveFilteredDataSnapshot);
+
     if (!searchTerm) {
-        filteredData = [...shipmentData];
+        filteredData = baseData;
     } else {
-        filteredData = shipmentData.filter(item => {
+        filteredData = baseData.filter(item => {
             return Object.values(item).some(value => {
                 if (value === null || value === undefined) {
                     return false;
                 }
                 const stringValue = String(value).toLowerCase();
-                const searchTermLower = searchTerm; // Already lowercase
+                const searchTermLower = searchTerm; 
 
-                // 1. Standard check
                 if (stringValue.includes(searchTermLower)) {
                     return true;
                 }
-
-                // 2. Comma-insensitive check (if standard check failed)
-                // Always perform this check if the standard one fails
                 const normalizedValue = stringValue.replace(/,/g, '');
                 const normalizedSearch = searchTermLower.replace(/,/g, '');
-
-                // Ensure we don't accidentally match on empty strings if the search term was only commas
                 if (normalizedSearch.length === 0 && searchTermLower.length > 0) {
                     return false;
                 }
-                
                 if (normalizedValue.includes(normalizedSearch)) {
                     return true;
                 }
-                
-                return false; // Didn't match either way
+                return false; 
             });
         });
     }
-    console.log('Filtered data after search:', JSON.parse(JSON.stringify(filteredData))); // Log a copy
+    console.log('Filtered data after search logic:', JSON.parse(JSON.stringify(filteredData)));
 
-    // If a sort column is set, re-apply sort after search
     if (sortColumn !== -1) {
-        // Temporarily store current sort to re-apply to new filteredData
         const currentSortCol = sortColumn;
         const currentSortDir = sortDirection;
-        sortColumn = -1; // Reset before calling sortTable to avoid toggling direction unintentionally
-        sortTable(currentSortCol);
-        sortDirection = currentSortDir; // Restore original direction if sortTable reset it
-    } else {
-        renderTable(); // Re-render the table with search results (no sort)
-    }
-     updateSortIndicators(); // Also update indicators after search
+        // Apply sort to the newly filteredData
+        // Directly call sort logic instead of sortTable to avoid sortColumn/direction side effects here
+        const key = document.querySelectorAll("th")[currentSortCol]?.dataset.columnKey;
+        if (key) {
+            filteredData.sort((a, b) => {
+                let valA = a[key];
+                let valB = b[key];
+                if (key === 'sPrice' || key === 'grossWeight' || key === 'contractQuantityMT' || key === 'totalAmount' || key === 'piValue') {
+                    valA = parseFloat(String(valA).replace(/[^\d.-]/g, '')) || 0;
+                    valB = parseFloat(String(valB).replace(/[^\d.-]/g, '')) || 0;
+                }
+                valA = valA === null || valA === undefined ? '' : valA;
+                valB = valB === null || valB === undefined ? '' : valB;
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                if (valA < valB) return currentSortDir === 'asc' ? -1 : 1;
+                if (valA > valB) return currentSortDir === 'asc' ? 1 : -1;
+                return 0;
+            });
+        }
+    } 
+    renderTable(); 
+    updateSortIndicators();
 }
 
 // Event listeners
@@ -713,21 +722,168 @@ document.addEventListener("DOMContentLoaded", () => {
     if (showAllBtn) {
         showAllBtn.addEventListener('click', () => {
             console.log('Show All clicked');
-            // Clear search input
             if (searchInput) {
-                searchInput.value = '';
+                searchInput.value = ''; // Clear search term
             }
-            // Clear any active filter (we'll need a variable for this later)
-            // console.log('Clearing active filters...'); 
-            // activeFilter = null; 
-            
-            // Reset sort state
-            sortColumn = -1;
+            sortColumn = -1; // Reset sort
             sortDirection = 'asc';
-
-            // Reset filteredData to full data and re-render
-            performSearch(); // This will reset filter to shipmentData and call render/updateIndicators
+            hiveFilteredDataSnapshot = null; // Clear HIVE snapshot
+            // performSearch will now use full shipmentData because hiveFilteredDataSnapshot is null and searchTerm is empty
+            performSearch(); 
         });
+    }
+
+    // --- HIVE Query Section ---
+    const hiveQuestionInput = document.getElementById('hiveQuestionInput');
+    const askHiveButton = document.getElementById('askHiveButton');
+    const hiveResultsArea = document.getElementById('hiveResultsArea');
+
+    function displayUserQuestion(question) {
+        const userMessageDiv = document.createElement('div');
+        userMessageDiv.classList.add('chat-message', 'user-question');
+        userMessageDiv.textContent = question;
+        hiveResultsArea.appendChild(userMessageDiv);
+        hiveResultsArea.scrollTop = hiveResultsArea.scrollHeight; // Scroll to bottom
+    }
+
+    function renderHiveQueryResults(data) {
+        const hiveResponseDiv = document.createElement('div');
+        hiveResponseDiv.classList.add('chat-message', 'hive-response');
+
+        let content = '';
+        let hasDataTable = data.data_from_db && Array.isArray(data.data_from_db) && data.data_from_db.length > 0;
+
+        if (data.answer && (!hasDataTable || data.answer.toLowerCase().includes("error") || (data.sql_query_generated && data.sql_query_generated.startsWith("# Cannot generate SQL")) || data.answer.includes("LLM client not available"))) {
+            content += `<h4>HIVE Says:</h4><p>${escapeHtml(data.answer)}</p>`;
+        }
+
+        if (data.sql_query_generated && data.sql_query_generated !== "# SQL generation not attempted." && !(data.sql_query_generated && data.sql_query_generated.startsWith("# Cannot generate SQL"))) {
+            content += `<h4>Generated SQL:</h4><pre>${escapeHtml(data.sql_query_generated)}</pre>`;
+        }
+
+        if (hasDataTable) {
+            content += `<h4>Data from Database (${data.data_from_db.length} rows):</h4>`;
+            content += '<table class="hive-data-table data-table">';
+            content += '<thead><tr>';
+
+            // Get main table header keys and display names for consistent ordering
+            const mainTableHeaders = document.querySelectorAll("#shipmentTableBody")[0].closest('table').querySelectorAll('thead th');
+            const mainTableHeaderKeys = [];
+            const mainTableHeaderDisplayNames = [];
+            mainTableHeaders.forEach(th => {
+                const key = th.dataset.columnKey;
+                if (key) { // Only consider headers with a data-column-key (excludes Actions column)
+                    mainTableHeaderKeys.push(key);
+                    mainTableHeaderDisplayNames.push(th.textContent || key); // Use textContent or key as fallback
+                }
+            });
+
+            // Build HIVE table headers based on main table's header order and display names
+            mainTableHeaderDisplayNames.forEach(displayName => {
+                content += `<th>${escapeHtml(displayName)}</th>`;
+            });
+            content += '</tr></thead><tbody>';
+
+            // Build HIVE table body using the main table's key order
+            data.data_from_db.forEach(row => {
+                content += '<tr>';
+                mainTableHeaderKeys.forEach(key => {
+                    // HIVE data might come with different casing or structure for keys,
+                    // so we need to find the HIVE key that matches our mainTableHeaderKey (case-insensitive)
+                    let hiveRowKey = Object.keys(row).find(k => k.toLowerCase() === key.toLowerCase());
+                    const val = hiveRowKey ? row[hiveRowKey] : ''; // Get value if key found, else empty
+                    content += `<td>${escapeHtml(val === null || val === undefined ? '' : val)}</td>`;
+                });
+                content += '</tr>';
+            });
+            content += '</tbody></table>';
+
+            hiveFilteredDataSnapshot = data.data_from_db;
+            console.log("HIVE provided data. Updated hiveFilteredDataSnapshot. Triggering performSearch to update main table.");
+            performSearch(); 
+        } else {
+            if (data.data_from_db === null && data.answer && data.answer.includes("Query executed successfully") && !content.includes("HIVE Says")) {
+                 content += `<p>Query executed, but no data was returned from the database.</p>`;
+            }
+            // If HIVE did not return a table, do not change hiveFilteredDataSnapshot or re-call performSearch for main table here.
+            // The main table will retain its previous state.
+        }
+
+        hiveResponseDiv.innerHTML = content;
+        hiveResultsArea.appendChild(hiveResponseDiv);
+        hiveResultsArea.scrollTop = hiveResultsArea.scrollHeight;
+    }
+
+    askHiveButton.addEventListener('click', async () => {
+        const question = hiveQuestionInput.value.trim();
+        if (!question) {
+            alert('Please enter a question for HIVE.');
+            return;
+        }
+
+        displayUserQuestion(question);
+        hiveQuestionInput.value = ''; // Clear input after displaying question
+
+        // Add a temporary "HIVE is thinking..." message
+        const thinkingMsg = document.createElement('div');
+        thinkingMsg.classList.add('chat-message', 'hive-response');
+        thinkingMsg.innerHTML = '<em>HIVE is thinking...</em>';
+        hiveResultsArea.appendChild(thinkingMsg);
+        hiveResultsArea.scrollTop = hiveResultsArea.scrollHeight;
+
+        try {
+            const response = await fetch('/api/llm-query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ question: question })
+            });
+
+            hiveResultsArea.removeChild(thinkingMsg); // Remove "thinking" message
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response.', details: `HTTP error! status: ${response.status}` }));
+                const errorResponseDiv = document.createElement('div');
+                errorResponseDiv.classList.add('chat-message', 'hive-response');
+                errorResponseDiv.innerHTML = `<h4>Error:</h4><p>${escapeHtml(errorData.error || 'Unknown error')}</p>${errorData.details ? `<p><small>${escapeHtml(errorData.details)}</small></p>` : ''}`;
+                hiveResultsArea.appendChild(errorResponseDiv);
+            } else {
+                const data = await response.json();
+                console.log('askHiveButton: Data received from /api/llm-query to be passed to renderHiveQueryResults:', JSON.parse(JSON.stringify(data)));
+                renderHiveQueryResults(data);
+            }
+        } catch (error) {
+            if (hiveResultsArea.contains(thinkingMsg)) {
+                 hiveResultsArea.removeChild(thinkingMsg); // Remove "thinking" message if it's still there
+            }
+            console.error('Error querying HIVE:', error);
+            const errorResponseDiv = document.createElement('div');
+            errorResponseDiv.classList.add('chat-message', 'hive-response');
+            errorResponseDiv.innerHTML = `<h4>Network/Request Error:</h4><p>${escapeHtml(error.message)}</p><p><small>Check the console for more details. Ensure the backend and Python LLM service are running.</small></p>`;
+            hiveResultsArea.appendChild(errorResponseDiv);
+        }
+        hiveResultsArea.scrollTop = hiveResultsArea.scrollHeight; // Scroll to bottom one last time
+    });
+
+    // Add event listener for Enter key on the input field
+    hiveQuestionInput.addEventListener('keypress', function(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault(); // Prevent default action (like form submission if it were in a form)
+            askHiveButton.click(); // Programmatically click the button
+        }
+    });
+
+    // Simple HTML escape function (incomplete, but good for basic cases)
+    function escapeHtml(unsafe) {
+        if (unsafe === null || unsafe === undefined) return '';
+        if (typeof unsafe !== 'string') unsafe = String(unsafe);
+        return unsafe
+             .replace(/&/g, "&amp;")
+             .replace(/</g, "&lt;")
+             .replace(/>/g, "&gt;")
+             .replace(/"/g, "&quot;")
+             .replace(/'/g, "&#039;");
     }
 });
 

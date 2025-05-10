@@ -42,12 +42,24 @@ def get_table_schema(table_name="shipments"):
         cursor.execute(f"PRAGMA table_info({table_name});")
         columns_data = cursor.fetchall()
         conn.close()
+
+        # Log the raw column data retrieved from PRAGMA table_info
+        app.logger.info(f"Raw columns_data from PRAGMA table_info for '{table_name}': {columns_data}")
+
         if not columns_data:
+            # Log if no column data is found
+            app.logger.warning(f"No columns found for table '{table_name}' during schema retrieval.")
             return None
+        
         schema_parts = [f"{col['name']} ({col['type']})" for col in columns_data]
-        return f"Table '{table_name}' columns: {', '.join(schema_parts)}."
+        final_schema_str = f"Table '{table_name}' columns: {', '.join(schema_parts)}."
+        
+        # Log the final schema string being sent to the LLM
+        app.logger.info(f"Generated schema string for LLM for table '{table_name}': {final_schema_str}")
+        
+        return final_schema_str
     except Exception as e:
-        app.logger.error(f"Error getting table schema: {e}")
+        app.logger.error(f"Error getting table schema for '{table_name}': {e}")
         raise
 
 def execute_sql_query(sql_query):
@@ -101,6 +113,7 @@ def generate_sql_with_llm(question, schema):
         f"And the user's question: '{question}'\n\n"
         f"Please generate a syntactically correct SQLite SQL query to answer the question. "
         f"Only return the SQL query itself and nothing else. Do not include any explanations or markdown formatting. "
+        f"When comparing string values in a WHERE clause, use the LOWER() function on both the column and the value to ensure case-insensitive matching (e.g., LOWER(column_name) = LOWER('value')). "
         f"If the question cannot be answered with a SQL query, is ambiguous, or requires modification of data (UPDATE, INSERT, DELETE), "
         f"then return only the text: '# Cannot generate SQL for this question.'"
         f"{anthropic.AI_PROMPT}"
