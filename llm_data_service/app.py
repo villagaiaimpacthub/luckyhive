@@ -4,16 +4,30 @@ import sqlite3 # For SQLite interaction
 from dotenv import load_dotenv # To load .env file
 import anthropic # Import the Anthropic SDK
 import re # Import the re module for regular expressions
+import urllib.parse # For URL decoding PDF paths
+import pdfplumber # For PDF text extraction
 
 load_dotenv() # Load environment variables from .env, including ANTHROPIC_API_KEY
 
 app = Flask(__name__)
 
-# Construct the absolute path to the database
-# __file__ is the path to the current script (app.py)
-# os.path.dirname(__file__) is the directory of app.py (llm_data_service)
-# os.path.join(..., '..', 'shipping_data.db') goes up one level and then to shipping_data.db
-DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'shipping_data.db'))
+# Determine project root (one level up from llm_data_service directory)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+DATABASE_PATH = os.path.join(PROJECT_ROOT, 'shipping_data.db') # Adjusted to use PROJECT_ROOT
+
+PDF_PATH_OVERRIDES = {
+    "LC VIETNAM 74 Phuc Hung Colorful Metal Joint Stock Company/ELC2500000046/ EXP. 15/4/2025": {
+        "laboratoryReport": "LABORATORY REPORT",
+        "provisionalDocs": "Shipping Docs: provisional", 
+        "finalDocs": "Shipping Docs: FINAL Docs"
+    },
+    "XIN SHENG ENVIRONMENTAL (M) SDN BHD /79/villingota": {
+        "laboratoryReport": "LABORATORY REPORT",
+        "provisionalDocs": "Shipping Docs: provisional",
+        "finalDocs": "Shipping Docs: FINAL Docs"
+    }
+    # Add more overrides as needed, using the exact shipmentName from the DB as the key.
+}
 
 # Initialize Anthropic Client
 # Ensure ANTHROPIC_API_KEY is set in your .env file
@@ -25,6 +39,90 @@ try:
         app.logger.warning("ANTHROPIC_API_KEY not found. LLM functionality will be limited.")
 except Exception as e:
     app.logger.error(f"Error initializing Anthropic client: {e}")
+
+def sanitize_folder_name(name):
+    """Sanitizes a name to be used as a folder name.
+       Replaces / with _ to match user's current directory structure.
+    """
+    # Replace / with _ as per user's directory naming convention
+    sanitized = name.replace('/', '_')
+    # Add other common sanitizations if needed, e.g., for : \ * ? " < > |
+    # For now, only / -> _ is implemented based on current need.
+    return sanitized
+
+def util_extract_text_from_pdf(db_column_value, shipment_name_from_db, doc_column_name):
+    """Constructs the PDF path using overrides and extracts text.
+    Args:
+        db_column_value (str): The raw value from the DB document column (e.g., a filename or partial path).
+        shipment_name_from_db (str): The shipmentName from the DB.
+        doc_column_name (str): The name of the database column (e.g., 'labReport', 'provisionalDocs').
+    """
+    if not db_column_value or not shipment_name_from_db or not doc_column_name:
+        app.logger.warning("DB column value, shipment name, or doc column name is missing for PDF extraction.")
+        return None
+    try:
+        shipment_override_config = PDF_PATH_OVERRIDES.get(shipment_name_from_db)
+        
+        if not shipment_override_config:
+            app.logger.warning(f"No PDF path override found for shipment: '{shipment_name_from_db}'. Cannot determine subfolder.")
+            return None
+            
+        doc_type_subfolder = shipment_override_config.get(doc_column_name)
+        if not doc_type_subfolder:
+            app.logger.warning(f"No subfolder override for doc type '{doc_column_name}' in shipment '{shipment_name_from_db}'.")
+            return None
+
+        # Extract base filename from the db_column_value
+        potential_path_segment = urllib.parse.unquote(db_column_value)
+        base_filename_from_db = os.path.basename(potential_path_segment)
+        
+        if not base_filename_from_db and db_column_value: # If unquoting led to an empty basename (e.g. path ended with /), try original
+            base_filename_from_db = os.path.basename(db_column_value)
+
+        if not base_filename_from_db: # If still no filename, cannot proceed
+             app.logger.error(f"Could not determine base filename from DB value: '{db_column_value}' for shipment '{shipment_name_from_db}'.")
+             return None
+        
+        shipment_folder_name_sanitized = sanitize_folder_name(shipment_name_from_db)
+        pdf_base_dir = os.path.join(PROJECT_ROOT, 'pdf')
+        
+        # List of filenames to try to handle space/underscore inconsistencies
+        filenames_to_try = [
+            base_filename_from_db, # Original
+            base_filename_from_db.replace('_', ' '), # Underscores to spaces
+            base_filename_from_db.replace(' ', '_')  # Spaces to underscores
+        ]
+        # Remove duplicates if the original filename had neither spaces nor underscores, or if replacements result in same string
+        filenames_to_try = list(dict.fromkeys(filenames_to_try)) 
+
+        absolute_pdf_path = None
+        found_pdf_file = False
+        
+        for filename_variant in filenames_to_try:
+            current_path_to_check = os.path.join(pdf_base_dir, shipment_folder_name_sanitized, doc_type_subfolder, filename_variant)
+            app.logger.info(f"Attempting to locate PDF with variant: {current_path_to_check}")
+            if os.path.exists(current_path_to_check):
+                absolute_pdf_path = current_path_to_check
+                found_pdf_file = True
+                app.logger.info(f"PDF file found at: {absolute_pdf_path}")
+                break
+        
+        if not found_pdf_file:
+            app.logger.error(f"PDF file not found after trying variants for base: '{base_filename_from_db}'. Searched in dir: '{os.path.join(pdf_base_dir, shipment_folder_name_sanitized, doc_type_subfolder)}'. Variants tried: {filenames_to_try}")
+            # Fallback logging from before is removed as this is more comprehensive
+            return None
+
+        text = ""
+        with pdfplumber.open(absolute_pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        app.logger.info(f"Extracted text from PDF (first 200 chars): {text[:200]}...")
+        return text
+    except Exception as e:
+        app.logger.error(f"Error extracting text from PDF. Shipment: '{shipment_name_from_db}', DB Value: '{db_column_value}', Column: '{doc_column_name}'. Error: {e}")
+        return None
 
 def get_db_connection():
     """Establishes a connection to the SQLite database."""
@@ -110,140 +208,324 @@ def generate_sql_with_llm(question, schema, selected_row_data=None, chat_history
         chat_history = []
 
     system_prompt_parts = [
-        f"You are an AI assistant that helps users query a SQLite database table named 'shipments'.",
-        f"The table schema is as follows:\n{schema}",
-        "Your primary goal is to generate a syntactically correct SQLite SQL query to answer the user's question.",
-        "IMPORTANT: You MUST return ONLY the raw SQL query. Do NOT include any surrounding text, explanations, or markdown formatting like ```sql ... ``` or phrases like 'Here is the SQL:' or 'Query executed successfully. Returning data.'. Only the SQL statement itself, starting directly with SELECT, INSERT, UPDATE, DELETE, etc.",
-        "When comparing string values in a WHERE clause, always use the LOWER() function on the database column.",
-        "For the value part of the comparison, if the user provides 'Value', your SQL should be `LOWER(column) = \'value\'` (i.e., you must put the lowercase version of the user's value directly into the SQL string literal).",
-        "Example: User asks for 'status is Done' -> SQL: `LOWER(status) = \'done\'`.",
-        "Example: User asks for 'goods are EAFD' -> SQL: `LOWER(fclsGoods) = \'eafd\'`.",
-        "If checking for non-empty strings, use `LENGTH(TRIM(column_name)) > 0` or (`column_name <> \'\' AND column_name IS NOT NULL`).",
-        "Avoid using newline characters (\\n, \\r) within SQL string literals. For example, `LOWER(piNo) <> \'\'` is correct, not `LOWER(piNo) <> \'\\n\'`.",
-        "When performing calculations (e.g., MAX, MIN, SUM, AVG, or when sorting numerically) on columns that might contain currency symbols (like '$') or commas (like in fields named 'piValue', 'totalAmount', 'sPrice', 'provisionalInvoiceValue', 'finalInvoiceBalance'), you MUST strip these characters before casting to a numeric type (REAL or DECIMAL for SQLite). Use nested REPLACE functions. For example, to treat 'piValue' as a number, the expression should be CAST(REPLACE(REPLACE(piValue, '$', ''), ',', '') AS REAL). Apply this to any relevant numeric column in SELECT, WHERE, OR ORDER BY clauses if it contains such characters.",
-        "DATE HANDLING: The 'etd', 'eta', and 'dueDate' columns store dates as text in the format 'Month Day, Year' (e.g., 'January 26, 2025'). SQLite's date() function will NOT correctly interpret this format directly and will return NULL (e.g., date('January 26, 2025') is NULL). To perform date comparisons on these columns, you MUST use the following SQLite expression pattern to first convert the column's string value into the 'YYYY-MM-DD' format. Let this conversion be represented by `convert_to_YYYYMMDD(column_name)` which expands to: " +
-        "`PRINTF('%s-%02d-%02d', SUBSTR(column_name, INSTR(column_name, ', ') + 2), CASE SUBSTR(column_name, 1, INSTR(column_name, ' ') - 1) WHEN 'January' THEN 1 WHEN 'February' THEN 2 WHEN 'March' THEN 3 WHEN 'April' THEN 4 WHEN 'May' THEN 5 WHEN 'June' THEN 6 WHEN 'July' THEN 7 WHEN 'August' THEN 8 WHEN 'September' THEN 9 WHEN 'October' THEN 10 WHEN 'November' THEN 11 WHEN 'December' THEN 12 END, CAST(REPLACE(SUBSTR(column_name, INSTR(column_name, ' ') + 1), ',', '') AS INTEGER))`" +
-        ". Example: A user query 'ETD after January 1, 2025' should translate to SQL like: `date(PRINTF('%s-%02d-%02d', SUBSTR(etd, INSTR(etd, ', ') + 2), CASE SUBSTR(etd, 1, INSTR(etd, ' ') - 1) WHEN 'January' THEN 1 WHEN 'February' THEN 2 WHEN 'March' THEN 3 WHEN 'April' THEN 4 WHEN 'May' THEN 5 WHEN 'June' THEN 6 WHEN 'July' THEN 7 WHEN 'August' THEN 8 WHEN 'September' THEN 9 WHEN 'October' THEN 10 WHEN 'November' THEN 11 WHEN 'December' THEN 12 END, CAST(REPLACE(SUBSTR(etd, INSTR(etd, ' ') + 1), ',', '') AS INTEGER))) > date('2025-01-01')`. " +
-        "Always apply this `convert_to_YYYYMMDD(column_name)` pattern for `etd`, `eta`, or `dueDate` columns when they are part of a date comparison. For the user-provided date value in the comparison (e.g., 'January 1, 2025' or 'March 2025'), ensure it is correctly formatted using `date('YYYY-MM-DD')` (e.g., `date('2025-01-01')` for 'January 1, 2025' or `date('2025-03-31')` for 'after March 2025').",
-        "If a user provides a general term for filtering (e.g., 'pending', 'eafd') without specifying a column, infer the most relevant column (like status, fclsGoods, shipmentName) based on the term and schema.",
-        "If the user's question appears to be a follow-up to a previous query (e.g., using phrases like 'of those', 'and also', 'now filter by'), you should try to combine the conditions from the previous successful SQL query (look for an assistant message in the chat history that includes 'Generated SQL: ...') with the new conditions from the current question. If the previous query in history was a SELECT query, its WHERE clause is a good starting point to append new conditions using AND. Prioritize the most recent user questions and any relevant generated SQL from the immediate preceding assistant message in history. Ensure correct SQL syntax when combining conditions, especially with AND/OR operators and parentheses.",
-        "Furthermore, if the user asks for an aggregate value (e.g., 'what is the total ...', 'count them', 'highest value', 'average price') as a follow-up to a filtered view, apply the aggregate function to the dataset defined by the WHERE clause of the most recent relevant query in the chat history. For example, if history implies a filter of 'LOWER(status) = \'done\'', and the user asks 'what is the total pi value?', the query should be something like 'SELECT SUM(CAST(REPLACE(REPLACE(piValue, \'$\', \'\'), \',\', \'\') AS REAL)) FROM shipments WHERE LOWER(status) = \'done\';'.",
-        "If the user's question explicitly or implicitly asks to *see the rows* or *show the items* that correspond to an aggregate (e.g., 'show me the shipments with the highest PI value', 'which items have the minimum quantity?'), you should generate a SQL query that returns all standard columns for those rows (e.g., using 'SELECT *'). This typically involves using the aggregate function in a subquery within the WHERE clause. For instance, to 'show items with the highest piValue' from a contextual filter of 'status is done', the query should be like: SELECT * FROM shipments WHERE LOWER(status) = 'done' AND CAST(REPLACE(REPLACE(piValue, \'$\', \'\'), \',\', \'\') AS REAL) = (SELECT MAX(CAST(REPLACE(REPLACE(piValue, \'$\', \'\'), \',\', \'\') AS REAL)) FROM shipments WHERE LOWER(status) = 'done'); Make sure to re-apply all relevant contextual filters from chat history in both the main query and the subquery.",
-        "If the question cannot be answered with a SQL query (e.g., it's conversational, too ambiguous, or requires data modification like UPDATE, INSERT, DELETE), then return only the text: '# Cannot generate SQL for this question.'"
+        "You are an AI assistant that generates ONLY SQLite SQL queries for a table named 'shipments'.",
+        "VERY HIGH PRIORITY RULE FOR PDF FOLLOW-UPS: If the user's current question is short and seems like a direct follow-up to details offered from a PDF in the immediately preceding assistant turn in chat_history (e.g., user says 'yes', 'tell me more', 'what are the values?', 'give me the percentages'):",
+        "  1. Your primary goal is to re-generate the *original* `--PDF_LOOKUP` SQL query that was used to fetch that PDF. This original query can be inferred from the earlier user question in the chat_history that initially led to the PDF offer.",
+        "  2. The re-generated SQL MUST be for retrieving the *document path columns* (e.g., `laboratoryReport`, `shipmentName`) again. Do NOT try to query for the specific details (like percentages) directly from database table columns.",
+        "  3. Example: If assistant offered details from a lab report for 'LC VIETNAM' and user says 'yes, tell me the values', you should regenerate: `--PDF_LOOKUP\\nSELECT laboratoryReport, shipmentName FROM shipments WHERE LOWER(shipmentName) LIKE '%lc vietnam%' LIMIT 1;`",
+        "  If you absolutely cannot determine the original SQL for the PDF lookup from history for such a follow-up, then return ONLY `#CANNOT_DETERMINE_PDF_FOLLOWUP_SQL#`.",
+        f"The table schema is: {schema}",
+        "CRITICALLY IMPORTANT FOR DOCUMENT QUERIES (Initial PDF identification): If the user's question asks about the content of a document (and it's NOT a simple follow-up as described above) AND the schema includes document columns like `laboratoryReport`, `provisionalDocs`, or `finalDocs`:",
+        "   1. YOU MUST prefix your SQL query with the exact comment: '--PDF_LOOKUP\\n' (the newline is VITAL).",
+        "   2. The SQL after this prefix MUST select the correct document column (CHOOSE FROM: `laboratoryReport`, `provisionalDocs`, `finalDocs`) AND the `shipmentName` column.",
+        "   3. Example: '--PDF_LOOKUP\\nSELECT laboratoryReport, shipmentName FROM shipments WHERE LOWER(shipmentName) LIKE '%vietnam%' LIMIT 1;'.",
+        "   4. The system will then use this to fetch the PDF and answer the question. Do NOT try to answer the PDF content question yourself in this step. Your ONLY job is the correctly prefixed SQL.",
+        "   5. If the question is NOT about document content, do NOT use the --PDF_LOOKUP prefix.",
+        "ALL OTHER QUERIES: For all other questions not about document content, generate a direct SQLite SQL query.",
+        "ALWAYS return ONLY the raw SQL query. No explanations, no markdown like ```sql ... ```.",
+        "When comparing string values for most columns, use `LOWER(column) = 'value'` (lowercase the user's value in the SQL).",
+        "SHIPMENT NAME MATCHING: If the user refers to a shipment by a partial name in any query (including document queries), use `LOWER(shipmentName) LIKE '%partial_name_lowercase%'` to find it. If they provide what seems like a full, specific shipmentName, you can use `LOWER(shipmentName) = 'full_name_lowercase'`.",
+        "Example (partial shipmentName): User: 'status for LC Vietnam shipment' -> SQL: `SELECT status FROM shipments WHERE LOWER(shipmentName) LIKE '%lc vietnam%'`",
+        "Example (general string): User: 'status is Done' -> SQL: `LOWER(status) = 'done'`.",
+        "Example (goods): User: 'goods are EAFD' -> SQL: `LOWER(fclsGoods) = 'eafd'`.",
+        "For non-empty string checks, use `LENGTH(TRIM(column_name)) > 0` or (`column_name <> '' AND column_name IS NOT NULL`).",
+        "Avoid newlines (\\n, \\r) in SQL string literals.",
+        "CURRENCY/NUMERIC HANDLING: For calculations (SUM, AVG, MAX etc.) or numeric sorting on columns like 'piValue', 'totalAmount', use `CAST(REPLACE(REPLACE(column, '$', ''), ',', '') AS REAL)`.",
+        "DATE HANDLING: 'etd', 'eta', 'dueDate' are 'Month Day, Year' (e.g., 'January 26, 2025'). SQLite's `date()` needs 'YYYY-MM-DD'. You MUST convert these columns using the full `PRINTF` expression provided below before comparing with `date('YYYY-MM-DD')` formatted dates.",
+        "   `PRINTF('%s-%02d-%02d', SUBSTR(column_name, INSTR(column_name, ', ') + 2), CASE SUBSTR(column_name, 1, INSTR(column_name, ' ') - 1) WHEN 'January' THEN 1 WHEN 'February' THEN 2 WHEN 'March' THEN 3 WHEN 'April' THEN 4 WHEN 'May' THEN 5 WHEN 'June' THEN 6 WHEN 'July' THEN 7 WHEN 'August' THEN 8 WHEN 'September' THEN 9 WHEN 'October' THEN 10 WHEN 'November' THEN 11 WHEN 'December' THEN 12 END, CAST(REPLACE(SUBSTR(column_name, INSTR(column_name, ' ') + 1), ',', '') AS INTEGER))`",
+        "   Example ETD after Jan 1 2025: `date(PRINTF-EXPRESSION-FOR-etd) > date('2025-01-01')`.",
+        "   For 'this month' queries, use `strftime('%Y-%m-01', 'now')` and `strftime('%Y-%m-%d', 'now', 'start of month', '+1 month', '-1 day')`. Apply PRINTF to the column.",
+        "ROW DISPLAY HANDLING: If asked for specific columns but intent is to filter/view rows in a table (e.g., 'contract number for this month shipments'), use `SELECT * FROM shipments WHERE ...` to allow main table update. If purely analytical (e.g., 'list unique contract numbers') then select specific columns. If in doubt, prefer `SELECT *`.",
+        "FOLLOW-UP QUERIES: Combine conditions from previous SQL (from chat history) with new conditions using AND. Apply aggregates to the already filtered dataset.",
+        "AGGREGATES WITH ROW DISPLAY: If asked to *see rows* for an aggregate (e.g., 'show shipments with highest PI'), use `SELECT * ... WHERE ... column = (SELECT MAX(column) ... )`. Re-apply context filters in subquery.",
+        "If question cannot be answered with SQL, return ONLY: '# Cannot generate SQL for this question.'"
     ]
 
     if selected_row_data:
-        row_details = ", ".join([f"{key}: '{value}'" for key, value in selected_row_data.items() if value is not None]) # Filter out None values for clarity
+        row_details = ", ".join([f"{key}: '{value}'" for key, value in selected_row_data.items() if value is not None])
         selected_row_context = f"For additional context, the user has currently selected the following row in their table view: {{ {row_details} }}. If their question refers to 'this item', 'this contract', etc., use this selected row context. Otherwise, rely on the broader chat history and current question."
-        system_prompt_parts.insert(2, selected_row_context) # Insert after schema but before main instructions
+        system_prompt_parts.insert(2, selected_row_context)
     
-    final_system_prompt = "\n".join(system_prompt_parts)
-
-    messages_for_llm = list(chat_history) 
+    final_system_prompt = "\\n".join(system_prompt_parts)
+    messages_for_llm = list(chat_history)
     messages_for_llm.append({"role": "user", "content": question})
 
-    app.logger.info(f"LLM System Prompt:\n{final_system_prompt}")
-    app.logger.info(f"LLM Messages:\n{messages_for_llm}")
+    app.logger.info(f"LLM System Prompt:\\n{final_system_prompt}")
+    app.logger.info(f"LLM Messages:\\n{messages_for_llm}")
 
-    sql_query_from_llm = ""
-    cleaned_sql = "" 
+    raw_llm_output = ""
+    cleaned_sql = "# SQL generation failed."
+    pdf_lookup_prefix = "--PDF_LOOKUP\n"  #Canonical prefix WITH newline
+    pdf_lookup_marker = "--PDF_LOOKUP"    #Just the marker
 
     try:
         completion = anthropic_client.messages.create(
             model="claude-3-haiku-20240307",
             max_tokens=1024,
-            system=final_system_prompt, 
+            system=final_system_prompt,
             messages=messages_for_llm
         )
-        sql_query_from_llm = completion.content[0].text.strip()
-        app.logger.info(f"Raw SQL query from LLM: {sql_query_from_llm}")
+        raw_llm_output = completion.content[0].text.strip()
+        app.logger.info(f"Raw SQL query from LLM: {raw_llm_output}")
 
-        # Aggressively replace all newlines and carriage returns with a space first
-        sql_query_from_llm = sql_query_from_llm.replace('\n', ' ').replace('\r', ' ')
+        # Determine LLM's intent for PDF lookup from raw output
+        raw_llm_output_stripped_for_marker_check = raw_llm_output.strip()
+        llm_intended_pdf_lookup = raw_llm_output_stripped_for_marker_check.startswith(pdf_lookup_marker)
 
-        cleaned_sql = sql_query_from_llm 
-
-        # Attempt to find the start of the actual SQL statement (e.g., SELECT, UPDATE, INSERT, DELETE)
-        # This is to strip potential leading conversational text from the LLM.
-        sql_keywords = ["SELECT ", "UPDATE ", "INSERT ", "DELETE ", "WITH "] # Added WITH for CTEs
-        found_sql_start = False
-        for keyword in sql_keywords:
-            try:
-                # Case-insensitive search for the keyword
-                start_index = cleaned_sql.upper().index(keyword)
-                cleaned_sql = cleaned_sql[start_index:]
-                found_sql_start = True
-                break # Found the keyword, no need to check others
-            except ValueError:
-                continue # Keyword not found
+        sql_body_to_clean = raw_llm_output # Default: clean the whole raw output
+        if llm_intended_pdf_lookup:
+            # LLM indicated PDF lookup, so isolate the body after the marker for cleaning
+            if raw_llm_output_stripped_for_marker_check.startswith(pdf_lookup_prefix): # Check if it had the newline
+                sql_body_to_clean = raw_llm_output_stripped_for_marker_check[len(pdf_lookup_prefix):].strip()
+            else: # It had the marker, but not the marker + newline
+                sql_body_to_clean = raw_llm_output_stripped_for_marker_check[len(pdf_lookup_marker):].strip()
+            app.logger.info(f"LLM intended PDF lookup. Raw SQL body for cleaning: '{sql_body_to_clean}' (from raw_llm_output: '{raw_llm_output}')")
         
-        if not found_sql_start and not cleaned_sql.startswith("#"):
-            # If no major SQL keyword is found and it's not a comment, this might be an issue.
-            # However, the function might return an error message like "# Cannot generate..."
-            # The existing check in handle_query for `generated_sql.startswith("#")` will catch those.
-            app.logger.warning(f"Could not find a standard SQL starting keyword in LLM output: {cleaned_sql}")
+        current_sql_to_clean = sql_body_to_clean # This is what all subsequent cleaning steps will operate on
+
+        # Replace actual newline characters in the SQL body.
+        # The regex for string literals later handles newlines *represented as \\n* if they appear inside SQL strings.
+        current_sql_to_clean = current_sql_to_clean.replace('\r\n', ' ') # Order matters: \r\n first
+        current_sql_to_clean = current_sql_to_clean.replace('\n', ' ')
+        current_sql_to_clean = current_sql_to_clean.replace('\r', ' ')
+
+        # The found_prefix_in_raw variable is no longer needed with this approach.
+        # Its role is replaced by llm_intended_pdf_lookup.
+
+        sql_keywords = ["SELECT ", "UPDATE ", "INSERT ", "DELETE ", "WITH "] # NO --PDF_LOOKUP HERE ANYMORE
+        processed_for_keywords = False
+        # temp_cleaned_sql_body logic before loop is simplified as current_sql_to_clean is already the body
+        
+        temp_body_for_keyword_search = current_sql_to_clean # Use the (potentially isolated) body
+
+        for keyword in sql_keywords:
+            # if keyword == "--PDF_LOOKUP" ...: # This whole case is removed
+            try:
+                # Search in the temp_body_for_keyword_search
+                start_index = temp_body_for_keyword_search.upper().index(keyword)
+                # Update current_sql_to_clean to be the part from the keyword onwards
+                current_sql_to_clean = temp_body_for_keyword_search[start_index:]
+                processed_for_keywords = True
+                app.logger.info(f"Keyword '{keyword}' found. SQL body after keyword strip: '{current_sql_to_clean}'")
+                break
+            except ValueError:
+                continue
+        
+        if not processed_for_keywords and not current_sql_to_clean.startswith("#"):
+            # Only warn if no keyword found AND it's not a comment.
+            # If llm_intended_pdf_lookup was true, current_sql_to_clean might be an empty string
+            # or something not starting with a keyword, which can be valid for a PDF lookup body (e.g. if LLM only sent prefix)
+            if llm_intended_pdf_lookup and not current_sql_to_clean:
+                app.logger.info(f"LLM intended PDF lookup, and the SQL body after prefix is empty. Raw: '{raw_llm_output}'")
+            elif not llm_intended_pdf_lookup : # Standard query, no keyword found
+                app.logger.warning(f"Could not find a standard SQL starting keyword in LLM output: '{current_sql_to_clean}' (Raw LLM: '{raw_llm_output}')")
+            # else: PDF lookup intended, body is non-empty but no keyword (e.g. malformed SQL by LLM) - covered by later execution error
 
         common_wrappers = [
-            "```sql", "```", "SQL:", "Here is the SQL:", 
+            "```sql", "```", "SQL:", "Here is the SQL:",
             "The SQL query is:", "Generated SQL:"
         ]
         for wrapper in common_wrappers:
-            if cleaned_sql.lower().startswith(wrapper.lower()):
-                cleaned_sql = cleaned_sql[len(wrapper):].strip()
-            if wrapper == "```" and cleaned_sql.endswith(wrapper): 
-                 cleaned_sql = cleaned_sql[:-len(wrapper)].strip()
+            if current_sql_to_clean.lower().startswith(wrapper.lower()):
+                current_sql_to_clean = current_sql_to_clean[len(wrapper):].strip()
+            if wrapper == "```" and current_sql_to_clean.endswith(wrapper):
+                 current_sql_to_clean = current_sql_to_clean[:-len(wrapper)].strip()
+
+        def replace_newlines_in_literals_cb(match):
+            return match.group(1) + match.group(2).replace('\\n', ' ').replace('\\r', ' ') + match.group(3)
         
-        def replace_newlines_in_literals(match):
-            # Group 1: opening quote, Group 2: content, Group 3: closing quote
-            return match.group(1) + match.group(2).replace('\n', ' ').replace('\r', ' ') + match.group(3)
-        
-        # Regex: Group 1 is the quote char, Group 2 is the content, Group 3 is the closing quote char (same as G1)
-        cleaned_sql = re.sub(
-            r"('|\")((?:\\\1|(?:(?!\1).))*?)(\1)", 
-            replace_newlines_in_literals, 
-            cleaned_sql
+        current_sql_to_clean = re.sub(
+            r"(['\"])((?:\\\1|(?:(?!\1).))*?)(\1)",
+            replace_newlines_in_literals_cb,
+            current_sql_to_clean
         )
         
-        def lowercase_value_in_LOWER_comparison(match):
-            # Group 1: column_name, Group 2: operator, Group 3: opening_quote, Group 4: value, Group 5: closing_quote
+        def lowercase_value_in_LOWER_comparison_cb(match):
             return f"LOWER({match.group(1)}) {match.group(2)} {match.group(3)}{match.group(4).lower()}{match.group(5)}"
-        
-        cleaned_sql = re.sub(
-            r"LOWER\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s*(=|LIKE|<>|!=)\s*(['\"])((?:(?!\3).)*?)(\3)", 
-            lowercase_value_in_LOWER_comparison, 
-            cleaned_sql, 
+        current_sql_to_clean = re.sub(
+            r"LOWER\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s*(=|LIKE|<>|!=)\s*(['\"])((?:(?!\3).)*?)(\3)",
+            lowercase_value_in_LOWER_comparison_cb,
+            current_sql_to_clean,
             flags=re.IGNORECASE
         )
 
-        # Robust semicolon handling:
-        # 1. Remove all trailing semicolons.
-        original_cleaned_sql_for_logging = cleaned_sql # For logging if changes occur
-        temp_stripped_sql = cleaned_sql.strip()
-        
-        # Remove all trailing semicolons first
-        while temp_stripped_sql.endswith(';'):
-            temp_stripped_sql = temp_stripped_sql[:-1].strip()
-        
-        # If it's a SELECT or WITH statement, and it doesn't already end with a semicolon (after initial cleaning/stripping), add one.
-        if temp_stripped_sql and not temp_stripped_sql.startswith("#") and \
-           temp_stripped_sql.strip().upper().startswith(("SELECT", "WITH")) and \
-           not original_cleaned_sql_for_logging.strip().endswith(';'): # Check original before stripping all for this condition
-            cleaned_sql = temp_stripped_sql + ';'
-        else:
-            cleaned_sql = temp_stripped_sql # Use the version with all trailing semicolons removed if not adding one back
+        current_sql_to_clean = re.sub(r"(strftime\s*\([^)]*?'\))\s*;$", r"\\1);", current_sql_to_clean, flags=re.IGNORECASE)
+        current_sql_to_clean = re.sub(r"(date\s*\(PRINTF\([^)]*?'\))\s*;$", r"\\1);", current_sql_to_clean, flags=re.IGNORECASE)
 
-        if original_cleaned_sql_for_logging != cleaned_sql and sql_query_from_llm != cleaned_sql : # Avoid double logging if no change here
-            app.logger.info(f"SQL after semicolon normalization: \"{cleaned_sql}\"")
-        elif sql_query_from_llm != cleaned_sql : # Log if only initial cleaning changed it
-            app.logger.info(f"Cleaned & Normalized SQL: \"{cleaned_sql}\"")
+        temp_sql = current_sql_to_clean.strip()
+        iterations = 0
+        while iterations < 10:
+            made_change_in_iteration = False
+            original_length = len(temp_sql)
+
+            # Specific cleanup for "LIMIT 1;';" style errors
+            if temp_sql.endswith("LIMIT 1;';") or temp_sql.endswith("LIMIT 1;\\\";"): # Checking for quote then semicolon
+                temp_sql = temp_sql[:-3] + "LIMIT 1" # Remove ;'; or ;";
+                made_change_in_iteration = True
+            elif temp_sql.endswith("LIMIT 1;'") or temp_sql.endswith("LIMIT 1;\\\""): # Checking for just quote
+                temp_sql = temp_sql[:-2] + "LIMIT 1" # Remove ;' or ;"
+                made_change_in_iteration = True
+            
+            if temp_sql.endswith(');'):
+                temp_sql = temp_sql[:-1].strip()
+                made_change_in_iteration = True
+            while temp_sql.endswith(';;'):
+                temp_sql = temp_sql[:-1].strip()
+                made_change_in_iteration = True
+            if temp_sql.endswith(')') and temp_sql.count(')') > temp_sql.count('('):
+                temp_sql = temp_sql[:-1].strip()
+                made_change_in_iteration = True
+            if temp_sql.endswith(';') and (temp_sql.startswith("#") or len(temp_sql) == 1): # or if it's just a semicolon by itself
+                temp_sql = temp_sql[:-1].strip()
+                made_change_in_iteration = True
+            
+            if not made_change_in_iteration and len(temp_sql) == original_length:
+                break
+            iterations += 1
+        current_sql_to_clean = temp_sql
+
+        # Logic for deciding if the final SQL output needs the --PDF_LOOKUP\n prefix
+        is_simple_follow_up = question.strip().lower() in ["yes", "ok", "sure", "tell me more", "what are the values?", "give me the percentages", "i would like to know the values"]
+        
+        assistant_had_successful_pdf_answer_previously = False
+        if chat_history and len(chat_history) >= 1:
+            last_message = chat_history[-1]
+            if last_message.get('role') == 'assistant' and not last_message.get('content', '').startswith("Error:"):
+                pdf_answer_keywords = ["report no", "date reported", "elements listed", "document states", "text contains", "analysis shows"]
+                if any(keyword in last_message.get('content', '').lower() for keyword in pdf_answer_keywords):
+                    assistant_had_successful_pdf_answer_previously = True
+                elif len(chat_history) >= 2: 
+                    user_q_before_assistant_ans = chat_history[-2]
+                    if user_q_before_assistant_ans.get('role') == 'user':
+                        pdf_trigger_keywords_for_prior_q = ["elements in", "content of", "details from", "summarize report", "what does the pdf say", "what does the document say", "lab report shows", "in the lab report", "in the document", "from the pdf", "test results"]
+                        if any(keyword in user_q_before_assistant_ans.get('content','').lower() for keyword in pdf_trigger_keywords_for_prior_q):
+                             assistant_had_successful_pdf_answer_previously = True
+        
+        # Determine if the final SQL output should have the canonical prefix
+        # llm_intended_pdf_lookup was determined from raw_llm_output at the beginning
+        final_sql_should_have_prefix = llm_intended_pdf_lookup or \
+                                       (is_simple_follow_up and assistant_had_successful_pdf_answer_previously)
+
+        final_sql_output = current_sql_to_clean # This is the cleaned body
+
+        if final_sql_should_have_prefix:
+            if not final_sql_output.startswith("#"): # Don't prefix comments like #CANNOT_DETERMINE_PDF_FOLLOWUP_SQL#
+                # If the body is empty (e.g. LLM only sent marker), and it was an intended PDF lookup, log a warning.
+                # An empty body for a PDF lookup means no actual SQL to run for path, which is an issue.
+                if not final_sql_output.strip() and llm_intended_pdf_lookup:
+                    app.logger.warning(f"LLM intended PDF lookup but the SQL body was empty after cleaning. Raw LLM: '{raw_llm_output}'. Returning special comment.")
+                    final_sql_output = "#PDF_LOOKUP_EMPTY_BODY#" # Special comment for handle_query
+                else:
+                    final_sql_output = pdf_lookup_prefix + final_sql_output # pdf_lookup_prefix has the \n
+                    log_message_prefix_application = "Applied PDF_LOOKUP prefix."
+                    if not llm_intended_pdf_lookup and (is_simple_follow_up and assistant_had_successful_pdf_answer_previously):
+                        log_message_prefix_application = "Heuristically ADDED PDF_LOOKUP prefix."
+                    elif llm_intended_pdf_lookup:
+                        log_message_prefix_application = "Applied PDF_LOOKUP prefix based on LLM intent (ensured format)."
+                    app.logger.info(f"{log_message_prefix_application} Raw LLM: '{raw_llm_output}'. Final SQL: {final_sql_output}")
+            # If final_sql_output starts with "#", it's a comment from earlier (e.g. LLM returned #Cannot...), keep it as is.
+        
+        cleaned_sql = final_sql_output
+        
+        # Final Semicolon for SELECT/WITH or cleanup for comments
+        if cleaned_sql and not cleaned_sql.startswith("#"):
+            sql_body_for_semicolon_check = cleaned_sql
+            if cleaned_sql.startswith(pdf_lookup_prefix): # pdf_lookup_prefix has the \n
+                sql_body_for_semicolon_check = cleaned_sql[len(pdf_lookup_prefix):].strip()
+            
+            if sql_body_for_semicolon_check.upper().startswith(("SELECT", "WITH")):
+                if not cleaned_sql.endswith(';'):
+                    cleaned_sql += ';'
+        elif cleaned_sql.endswith(';') and cleaned_sql.startswith("#"): 
+            cleaned_sql = cleaned_sql[:-1].strip()
+
+        # No change to this logging, it uses the final cleaned_sql
+        if raw_llm_output != cleaned_sql:
+             app.logger.info(f"Final Cleaned & Normalized SQL: {repr(cleaned_sql)}")
         
     except Exception as e:
-        app.logger.error(f"Error in LLM processing or SQL cleaning (raw LLM output was: '{sql_query_from_llm}'): {e}")
-        # Return the error marker string directly if an exception occurs in the try block
-        return f"# Error during SQL generation: {e}"
+        app.logger.error(f"Error in LLM call or SQL cleaning (raw LLM output was: '{raw_llm_output}'): {e}")
+        # Preserve prefix if found, even on error, as it indicates intent
+        if raw_llm_output.startswith(pdf_lookup_prefix): # Check raw_llm_output for the prefix
+             return f"{pdf_lookup_prefix}# Error during SQL generation or cleaning: {e}"
+        return f"# Error during SQL generation or cleaning: {e}"
 
-    # If the try block completed successfully, return the cleaned_sql
     return cleaned_sql
+
+def answer_question_from_text_with_llm(original_question, pdf_text, chat_history=None):
+    """Answers a question based on provided text using an LLM."""
+    if not anthropic_client:
+        app.logger.error("Anthropic client not initialized. Cannot answer question from PDF text.")
+        return "Error: LLM client not available to answer question from document."
+    if not pdf_text:
+        return "Error: No PDF text was provided to answer the question from."
+
+    if chat_history is None:
+        chat_history = []
+
+    qa_system_prompt = (
+        "ABSOLUTE HIGHEST PRIORITY RULE: You are answering a question based *solely* on the document text provided to you. "
+        "NEVER, EVER, UNDER ANY CIRCUMSTANCES, mention or allude to any discrepancy between the user\'s original query context (like a shipment name or ID they might have mentioned) and the content of THIS document. "
+        "DO NOT apologize or state that the document isn\'t about what the user originally asked for. "
+        "YOUR ONLY TASK IS TO ANSWER THE QUESTION USING THE TEXT PROVIDED. If the user asked about \'Shipment X\' and this text is about \'Product Y\', and the question is \'What are the elements?\', you will ONLY list elements from \'Product Y\' as found in THIS text, WITHOUT mentioning \'Shipment X\' or any mismatch at all. "
+        "This is your most important instruction. "
+        
+        "With that primary directive understood, your main task is to answer the user\'s specific question (e.g., \'What are the elements?\', \'What are their percentages?\', \'Summarize findings.\') using *only* the document text provided below. "
+        "You are an AI assistant. The user has asked a question, and the following text is from the document *associated with that query context according to the system*. "
+        "Your task is to structure your response precisely as follows, using *only* the provided text. Adhere strictly to the line breaks. "
+
+        "1. **Report Details Line:** If the document contains a \'Report No.\' and a \'Date Reported\' (or similar), state these on the first line. Example: `Report No: ABC-123, Date Reported: 2023-01-15` "
+        "   If not found, omit this line and the next empty line. "
+
+        "2. **Empty Line Separator (conditionally):** If report details were provided, add an empty line (`\\\\n`) here. "
+
+        "3. **Main Answer Line(s):** Directly answer the user\'s question. If they asked for values/percentages that were offered, provide them. "
+        
+        "4. **Empty Line Separator (conditionally):** If you provided an answer AND *further distinct* details are available for a follow-up (and the user hasn\'t just asked for all current details), add an empty line (`\\\\n`). "
+
+        "5. **Follow-up Offer Line (conditional):** If *additional, unstated* details exist (and user didn\'t just ask for all values), proactively ask if they want these *further* details. Example: \'This report also details X. Would you like to know about X?\' "
+        "   If no *further* details or if user asked for all current details, omit this. "
+
+        "Example (all parts present):\\\\n"
+        + "Report No: AEDML250043-R0, Date Reported: 02.02.2025\\\\n"
+        + "\\\\n"
+        + "The elements listed are: Moisture, Zinc as Zn, Iron as Fe, Water Soluble Chloride as Cl, Cadmium as Cd.\\\\n"
+        + "\\\\n"
+        + "The report also includes X, Y, Z. Would you like to know about those?"
+
+        "Example (user asks for values after offer - no further offer needed):\\\\n"
+        + "Report No: AEDML250043-R0, Date Reported: 02.02.2025\\\\n"
+        + "\\\\n"
+        + "The percentages are: Moisture 14.29%, Zinc as Zn 22.42%, etc."
+        # (No further offer here if all offered details were given)
+
+        "If specific info (e.g., \'elements\') isn\'t in this document, state that clearly (e.g., \'The requested information about elements is not available in this document.\'). Still provide Report No./Date if available. "
+        "Strictly follow this structure."
+    )
+    
+    messages_for_qa = [
+        {
+            "role": "user", 
+            "content": f"Here is the text from a document:\\n\\n---\\n{pdf_text}\\n---\\n\\nBased on the text above, please answer this question: {original_question}"
+        }
+    ]
+
+    app.logger.info(f"QA System Prompt: {qa_system_prompt}")
+    app.logger.info(f"Messages for QA LLM (question part only): {original_question}, PDF text length: {len(pdf_text)}")
+
+    try:
+        completion = anthropic_client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=1024,
+            system=qa_system_prompt,
+            messages=messages_for_qa
+        )
+        answer = completion.content[0].text.strip()
+        app.logger.info(f"LLM QA Answer: {answer}")
+        return answer
+    except Exception as e:
+        app.logger.error(f"Error calling LLM for QA from text: {e}")
+        return f"Error processing document content with LLM: {e}"
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -267,53 +549,119 @@ def handle_query():
             return jsonify({"error": "Missing 'question' in request body"}), 400
 
         question = data['question']
-        selected_row_data = data.get('selected_row_data') # Get selected_row_data, defaults to None if not present
-        chat_history = data.get('chat_history', []) # Get chat_history, defaults to empty list
+        selected_row_data = data.get('selected_row_data')
+        chat_history = data.get('chat_history', [])
 
         app.logger.info(f"Received question: {question}")
-        if selected_row_data:
-            app.logger.info(f"Received selected_row_data: {selected_row_data}")
-        if chat_history:
-            app.logger.info(f"Received chat_history length: {len(chat_history)}")
+        if selected_row_data: app.logger.info(f"Received selected_row_data: {selected_row_data}")
+        if chat_history: app.logger.info(f"Received chat_history length: {len(chat_history)}")
         
-        # 1. Get schema from shipping_data.db
         table_schema = get_table_schema()
         if not table_schema:
-             return jsonify({"error": f"Could not retrieve schema for table 'shipments'. Database might be empty or table missing."}), 500
+             return jsonify({"error": "Could not retrieve schema for table 'shipments'. Database might be empty or table missing."}), 500
+
+        pdf_lookup_prefix_marker = "--PDF_LOOKUP"
 
         if not anthropic_client:
             app.logger.warning("LLM client not available for SQL generation.")
             natural_answer = "LLM client not available. Cannot generate SQL or process query further."
         else:
             generated_sql = generate_sql_with_llm(question, table_schema, selected_row_data, chat_history)
-            if generated_sql.startswith("#") or not generated_sql.strip().upper().startswith("SELECT"):
-                app.logger.warning(f"LLM returned non-executable SQL or a comment: {generated_sql}")
-                natural_answer = f"Could not generate a valid SQL query for your question. LLM said: {generated_sql}"
+            app.logger.info(f"Initial SQL from LLM: {generated_sql}")
+
+        pdf_content_keywords = ["elements in", "content of", "details from", "summarize report", "what does the pdf say", "what does the document say", "lab report shows", "in the lab report", "in the document", "from the pdf"]
+        question_lower = question.lower()
+        is_pdf_question_heuristic = any(keyword in question_lower for keyword in pdf_content_keywords)
+
+        if generated_sql == "#CANNOT_DETERMINE_PDF_FOLLOWUP_SQL#":
+            natural_answer = "I understand you're asking for more details from the document, but I couldn't determine the specific document you're referring to from our conversation. Could you please clarify or re-ask your initial question about the document?"
+            db_results = None
+        elif generated_sql == "#PDF_LOOKUP_EMPTY_BODY#":
+            natural_answer = "I tried to look up the document, but the request was incomplete. Could you please try rephrasing your question about the document?"
+            db_results = None
+            app.logger.warning(f"LLM generated PDF_LOOKUP intent but with an empty SQL body for question: {question}")
+        elif is_pdf_question_heuristic and not generated_sql.strip().startswith(pdf_lookup_prefix_marker) and not generated_sql.startswith("#"):
+            app.logger.warning(f"Heuristic detected PDF question, but {pdf_lookup_prefix_marker} prefix is missing. Original SQL: '{generated_sql}'. Forcing a retry for PDF path.")
+            forced_pdf_question = (
+                f"The user asked: '{question}'. This question requires looking inside a document. "
+                f"Your task is ONLY to generate the SQL to retrieve the document path and shipmentName. "
+                f"You MUST prefix your SQL with '{pdf_lookup_prefix_marker}\n'. Select the most relevant document column (e.g., labReport) and shipmentName."
+            )
+            generated_sql = generate_sql_with_llm(forced_pdf_question, table_schema, selected_row_data, [])
+            app.logger.info(f"SQL from PDF-forced retry: {generated_sql}")
+
+        # Check for the PDF_LOOKUP_MARKER robustly
+        if generated_sql.strip().startswith(pdf_lookup_prefix_marker):
+            app.logger.info(f"PDF Lookup detected. SQL for path: {generated_sql}")
+            # Remove the prefix and any leading/trailing whitespace from the actual SQL part
+            sql_after_prefix = generated_sql.strip()[len(pdf_lookup_prefix_marker):].strip()
+            if not sql_after_prefix:
+                natural_answer = "PDF Lookup specified, but no SQL query followed the prefix."
+                app.logger.error(f"PDF Lookup error: No SQL after prefix. Original generated_sql: {generated_sql}")
             else:
+                actual_sql_for_path = sql_after_prefix 
                 try:
-                    db_results = execute_sql_query(generated_sql)
-                    natural_answer = "Query executed successfully. Returning data."
-                    # Here, one could optionally send db_results back to the LLM for summarization
-                except ValueError as ve: # Catch errors from execute_sql_query
-                    app.logger.error(f"Error executing generated SQL: {ve}")
-                    natural_answer = f"Error executing the generated SQL query: {ve}"
-                    # Potentially include the problematic SQL in the error if safe to do so
-                except Exception as e: # Catch any other unexpected errors during execution
-                    app.logger.error(f"Unexpected error during SQL execution: {e}")
-                    natural_answer = f"An unexpected error occurred while executing the SQL query."
+                    pdf_path_results = execute_sql_query(actual_sql_for_path)
+                    if pdf_path_results and isinstance(pdf_path_results, list) and len(pdf_path_results) > 0:
+                        first_result_row = pdf_path_results[0]
+                        pdf_path_segment_from_db = None
+                        shipment_name_for_folder = None
+                        doc_column_name_used_in_sql = None
+                        
+                        if 'shipmentName' not in first_result_row:
+                            natural_answer = "Could not find 'shipmentName' in query result for PDF lookup."
+                            app.logger.error("'shipmentName' column was not returned by the PDF lookup SQL query.")
+                        else:
+                            shipment_name_for_folder = first_result_row['shipmentName']
+                            for key, value in first_result_row.items():
+                                if key.lower() != 'shipmentname':
+                                    pdf_path_segment_from_db = value
+                                    doc_column_name_used_in_sql = key
+                                    break
+                            
+                            if not pdf_path_segment_from_db:
+                                natural_answer = "Could not determine PDF path column in query result."
+                            elif not shipment_name_for_folder:
+                                natural_answer = "Shipment name is missing, cannot construct PDF path."
+                            elif not doc_column_name_used_in_sql:
+                                natural_answer = "Could not determine document type column name from SQL result."
+                            else:
+                                app.logger.info(f"Retrieved PDF DB value: '{pdf_path_segment_from_db}', Shipment name: '{shipment_name_for_folder}', DocColumn: '{doc_column_name_used_in_sql}'")
+                                pdf_text = util_extract_text_from_pdf(pdf_path_segment_from_db, shipment_name_for_folder, doc_column_name_used_in_sql)
+                                if pdf_text:
+                                    natural_answer = answer_question_from_text_with_llm(question, pdf_text, chat_history)
+                                    db_results = None 
+                                    app.logger.info("Successfully processed PDF text with LLM for an answer.")
+                                else:
+                                    natural_answer = "Could not extract text from the identified PDF."
+                    else:
+                        natural_answer = "Could not find a relevant PDF path for your question."
+                        app.logger.warning(f"PDF path query returned no results or unexpected format: {pdf_path_results}")
+                except ValueError as ve:
+                    app.logger.error(f"Error executing PDF path SQL: {ve}")
+                    natural_answer = f"Error finding PDF: {ve}"
+                except Exception as e:
+                    app.logger.error(f"Unexpected error during PDF path retrieval/parsing: {e}")
+                    natural_answer = "An unexpected error occurred while trying to process the PDF."
+        
+        elif generated_sql.startswith("#") or not generated_sql.strip().upper().startswith("SELECT"):
+            app.logger.warning(f"LLM returned non-executable SQL or a comment: {generated_sql}")
+            natural_answer = f"Could not generate a valid SQL query for your question. LLM said: {generated_sql}"
+        else:
+            try:
+                db_results = execute_sql_query(generated_sql)
+                natural_answer = "Query executed successfully. Returning data."
+            except ValueError as ve:
+                app.logger.error(f"Error executing generated SQL: {ve}")
+                natural_answer = f"Error executing the generated SQL query: {ve}"
+            except Exception as e:
+                app.logger.error(f"Unexpected error during SQL execution: {e}")
+                natural_answer = f"An unexpected error occurred while executing the SQL query."
 
-        # --- TODO ---
-        # 2. Call LLM with question + schema to get SQL
-        # 3. Execute SQL on shipping_data.db
-        # 4. (Optional) Call LLM to summarize results
-        # 5. Return results
-        # ------------
-
-        # Placeholder response for now, including the schema
         response_data = {
             "received_question": question,
-            "received_selected_row": selected_row_data, # Include received selected row data
-            "received_chat_history": chat_history, # Include received chat history
+            "received_selected_row": selected_row_data,
+            "received_chat_history": chat_history,
             "table_schema_for_llm": table_schema,
             "sql_query_generated": generated_sql,
             "answer": natural_answer,
@@ -330,10 +678,8 @@ def handle_query():
     except Exception as e:
         app.logger.error(f"Critical error in /query handler: {e}")
         import traceback
-        traceback.print_exc() # For detailed debugging in development
+        traceback.print_exc()
         return jsonify({"error": "An critical internal server error occurred", "details": str(e)}), 500
 
 if __name__ == '__main__':
-    # For development, Flask's built-in server is fine.
-    # For production, use a proper WSGI server like Gunicorn.
-    app.run(host='0.0.0.0', port=5001, debug=True) # Using port 5001 to avoid conflict with Node server (3000) 
+    app.run(host='0.0.0.0', port=5001, debug=True) 
