@@ -35,14 +35,15 @@ console.log('Middleware configured.');
 const DB_PATH = './shipping_data.db';
 console.log(`Attempting to connect to database at: ${DB_PATH}`);
 
-const db = new sqlite3.Database(DB_PATH, (err) => {
+const db = new sqlite3.Database(DB_PATH, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
     if (err) {
-        console.error('Error opening database', err.message);
-        // Optionally, exit if DB connection fails critically, though app.listen might still try
-        // process.exit(1);
-        return; // Prevent further DB operations if connection failed
-    } 
-    console.log('Successfully connected to the SQLite database.');
+        console.error("Error connecting to the SQLite database:", err.message);
+        return;
+    }
+    console.log("Successfully connected to the SQLite database.");
+
+    // Create shipments table if it doesn't exist
+    // Adjusted to use correct camelCased column names and appropriate types
     db.run(`CREATE TABLE IF NOT EXISTS shipments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         shipmentName TEXT,
@@ -50,37 +51,62 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         status TEXT,
         contractNo TEXT,
         piNo TEXT,
-        piValue TEXT,
+        piValue TEXT, 
         invoiceNo TEXT,
         fclsGoods TEXT,
         shippingLine TEXT,
-        etd TEXT,
-        eta TEXT,
-        sPrice TEXT,
-        grossWeight TEXT,
-        contractQuantityMT TEXT,
-        totalAmount TEXT,
-        provisionalInvoiceValue TEXT,
-        finalInvoiceBalance TEXT,
-        polZnPercent TEXT,
-        podZnPercent TEXT,
-        polMoisture TEXT,
-        podMoisture TEXT,
-        lmePi TEXT,
-        lmePol TEXT,
-        lmePod TEXT,
-        trackingNo TEXT,
-        dueDate TEXT,
+        etd TEXT, 
+        eta TEXT, 
+        sPrice TEXT, 
+        grossWeight TEXT, 
+        contractQuantityMt TEXT, 
+        totalAmount TEXT, 
+        provisionalInvoiceValue TEXT, 
+        finalInvoiceBalance TEXT, 
+        polZnPercent TEXT, 
+        podZnPercent TEXT, 
+        polMoisture TEXT, 
+        podMoisture TEXT, 
+        lmePi TEXT, 
+        lmePol TEXT, 
+        lmePod TEXT, 
+        trackingNo TEXT, 
+        dueDate TEXT, 
         laboratoryReport TEXT,
         shippingDocsProvisional TEXT,
         shippingDocsFinalDocs TEXT,
-        lastEditedTime TEXT
+        lastEditedTime TEXT DEFAULT CURRENT_TIMESTAMP
     )`, (err) => {
         if (err) {
-            console.error("Error creating shipments table", err.message);
-        } else {
-            console.log("Shipments table successfully checked/created.");
+            console.error("Error creating shipments table:", err.message);
+            return;
         }
+        console.log("Shipments table successfully checked/created.");
+
+        // New Diagnostic Query: Inspect ETD values and their conversion by date()
+        // const diagnosticSqlInspect = `
+        //     SELECT id, status, etd, date(etd) as converted_etd
+        //     FROM shipments
+        //     WHERE LOWER(status) = 'done'
+        //     ORDER BY id DESC
+        //     LIMIT 10;
+        // `;
+        // db.all(diagnosticSqlInspect, [], (err, rows) => {
+        //     if (err) {
+        //         console.error("Error running ETD inspection query:", err.message);
+        //     } else {
+        //         console.log("---- ETD INSPECTION ----");
+        //         console.log("Query: Last 10 'done' shipments - showing etd & date(etd):");
+        //         if (rows && rows.length > 0) {
+        //             rows.forEach(row => {
+        //                 console.log(`ID: ${row.id}, Status: ${row.status}, ETD: '${row.etd}', date(ETD): '${row.converted_etd}'`);
+        //             });
+        //         } else {
+        //             console.log("No matching 'done' shipments found for ETD inspection.");
+        //         }
+        //         console.log("-------------------------");
+        //     }
+        // });
     });
 });
 
@@ -112,6 +138,42 @@ app.get('/api/shipments', (req, res) => {
         res.json(rows);
     });
 });
+
+// Utility function to convert string to camelCase
+function util_camelCase(str) {
+    if (typeof str !== 'string') return '';
+    // Trim whitespace, then replace non-alphanumeric sequences (keeping spaces for now) with a single space
+    str = str.trim().replace(/[^a-zA-Z0-9\s\/().%-]/g, ''); // Allow specific symbols like / ( ) . % -
+    // Handle cases like "POL Zn%" -> "polZnPercent" or "OBL No. " -> "oblNo"
+    // Special handling for "%" -> "Percent"
+    str = str.replace(/%/g, 'Percent');
+
+    return str
+        .replace(/\s*\(\s*/g, ' ') // Convert " (" to " "
+        .replace(/\s*\)\s*/g, ' ') // Convert ") " to " "
+        .replace(/\s*\/\s*/g, ' ') // Convert " / " to " "
+        .replace(/\s*-\s*/g, ' ') // Convert " - " to " "
+        .replace(/\s*\.\s*/g, ' ') // Convert " . " to " "
+        .split(/\s+/) // Split by one or more spaces
+        .map((word, index) => {
+            if (word.length === 0) return '';
+            // If it's the first word, lowercase it.
+            // Otherwise, capitalize the first letter and lowercase the rest.
+            if (index === 0) {
+                return word.toLowerCase();
+            }
+            // If a word is all caps (like "PI" or "NO" or "ZN"), keep it as is if it's short (2-3 chars), otherwise capitalize first and lower rest
+            if (word.toUpperCase() === word && word.length <= 3) {
+                 // If previous word ended a sentence (e.g. "oblNo", not "oblNO")
+                // For now, let's just capitalize first letter if not first word
+                return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+            }
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        })
+        .join('')
+        // Post-join cleanup for specific known patterns
+        .replace(/No(\b|(?=[A-Z]))/g, 'No'); // Retain "No" e.g. in "oblNo", "piNo"
+}
 
 // API endpoint for CSV Upload
 app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
@@ -155,12 +217,31 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
         }
 
         if (records.length > 0) {
-            currentProcessingReport.parsedHeaders = Object.keys(records[0]);
-            console.log("Headers found by csv-parse from CSV's first row:", currentProcessingReport.parsedHeaders);
-        }
-        currentProcessingReport.firstFewRawRecords = records.slice(0, 3); // Store first 3 raw records
+            // Get original headers from the first parsed CSV record
+            const originalCsvHeaders = Object.keys(records[0]);
+            console.log("Original CSV Headers (from csv-parse library):", originalCsvHeaders);
 
-        // Define expected DB column names (ALL 30 based on CSV headers)
+            // Create a map from original CSV header to cleaned, camelCased header
+            // And also an array of cleaned headers in order
+            const cleanedCamelCasedHeaders = [];
+            const headerMapToCleaned = {}; // originalHeader: cleanedCamelCaseHeader
+
+            originalCsvHeaders.forEach(originalHeader => {
+                const cleanedHeader = util_camelCase(originalHeader);
+                headerMapToCleaned[originalHeader] = cleanedHeader;
+                if (!cleanedCamelCasedHeaders.includes(cleanedHeader)) { // Avoid duplicates if cleaning leads to same name
+                    cleanedCamelCasedHeaders.push(cleanedHeader);
+                }
+            });
+            
+            currentProcessingReport.parsedHeaders = cleanedCamelCasedHeaders; // Report the cleaned headers
+            console.log("Cleaned (camelCased) Headers:", currentProcessingReport.parsedHeaders);
+            console.log("Header Map (Original CSV Header -> Cleaned DB Header Name):", headerMapToCleaned);
+
+        }
+        currentProcessingReport.firstFewRawRecords = records.slice(0, 3);
+
+        // Define expected DB column names (ALL 30 based on CSV headers) - these should be the TARGET clean names
         const dbColumns = [
             'shipmentName', 'oblNo', 'status', 'contractNo', 'piNo', 'piValue',
             'invoiceNo', 'fclsGoods', 'shippingLine', 'etd', 'eta', 'sPrice',
@@ -175,23 +256,29 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
             'shippingDocsFinalDocs', 'lastEditedTime'
         ];
 
-        const normalizeKey = (key) => {
-            if (typeof key !== 'string') return '';
-            return key.replace(/^\uFEFF/, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        // Explicit mappings: CSV Original Header String (after basic trim perhaps) -> Target DB Column Name (from dbColumns)
+        // This is for cases where util_camelCase might not perfectly match dbColumns for some tricky original headers.
+        // Example: '  Shipping Docs/ provisional hipping Docs/ provisional ': 'shippingDocsProvisional'
+        // We will try to rely mostly on util_camelCase and direct matching with dbColumns.
+        // This map can be used if a cleaned header STILL doesn't match a dbColumn name.
+        const manualHeaderCorrectionMap = {
+            // 'Original CSV Header String (exactly as parsed or slightly pre-cleaned)': 'targetDbColumnName',
+            // Example: if 'Shipping Docs/ FINAL Docs' becomes 'shippingDocsFINALDocs' via camelCase,
+            // but dbColumn is 'shippingDocsFinalDocs', we could map:
+            // 'Shipping Docs/ FINAL Docs': 'shippingDocsFinalDocs'
+            // OR, ensure util_camelCase handles it.
+            // Let's make util_camelCase robust. For now, this map can be empty or used for very specific overrides.
+             'shippingdocsprovisionalhippingdocsprovisional': 'shippingDocsProvisional', // If camelCase of a complex header results in this
+             'polzn': 'polZnPercent',
+             'podzn': 'podZnPercent',
+             'tracking': 'trackingNo'
         };
-
-        // More explicit mapping for problematic CSV headers to DB column names
-        // DB Column Name (from dbColumns) : Expected Normalized CSV Header
-        const explicitHeaderMappings = {
-            'polZnPercent': 'polzn', // ' POL ZN%' normalizes to 'polzn'
-            'podZnPercent': 'podzn', // 'POD ZN%' normalizes to 'podzn'
-            'trackingNo': 'tracking',  // 'Tracking # ' normalizes to 'tracking'
-            'shippingDocsProvisional': 'shippingdocsprovisionalhippingdocsprovisional' 
-            // '  Shipping Docs/ provisional hipping Docs/ provisional ' normalizes to 'shippingdocsprovisionalhippingdocsprovisional'
-            // This will now map to the DB column 'shippingDocsProvisional'. 
-            // If the intent was that 'shippingDocsProvisional' DB column should ONLY get data from a simple 'Shipping Docs Provisional' CSV header,
-            // then this mapping might be too greedy. However, it addresses the complex header.
-        };
+        // Get the cleaned headers again to be used for mapping, derived from the first record processed by csv-parse.
+        const firstRecordKeys = records.length > 0 ? Object.keys(records[0]) : [];
+        const cleanedHeaderMapForRecord = {}; // originalCSVKeyFromRecord : cleanedCamelCaseKey
+        firstRecordKeys.forEach(originalKey => {
+            cleanedHeaderMapForRecord[originalKey] = util_camelCase(originalKey);
+        });
 
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -208,30 +295,46 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
                 ) VALUES (${dbColumns.map(() => '?').join(', ')})`);
 
                 console.log('---- BEGIN CSV ROW PROCESSING (using csv-parse) ----');
-                for (const record of records) {
-                    const rowValuesForDb = dbColumns.map(dbColName => {
-                        let value = null;
-                        const normalizedDbColName = normalizeKey(dbColName);
-                        
-                        // Check for an explicit mapping first
-                        const explicitTargetNormalizedCsvKey = explicitHeaderMappings[dbColName];
+                for (const record of records) { // record uses original CSV headers as keys
+                    const cleanedRecord = {};
+                    for (const originalCsvKey in record) {
+                        if (Object.prototype.hasOwnProperty.call(record, originalCsvKey)) {
+                            const cleanedKey = cleanedHeaderMapForRecord[originalCsvKey] || util_camelCase(originalCsvKey); // Fallback just in case
+                            cleanedRecord[cleanedKey] = record[originalCsvKey];
+                        }
+                    }
 
-                        let foundCsvHeaderKey;
-                        if (explicitTargetNormalizedCsvKey) {
-                            foundCsvHeaderKey = Object.keys(record).find(csvHeader => 
-                                normalizeKey(csvHeader) === explicitTargetNormalizedCsvKey
-                            );
-                        } else {
-                            // Standard matching: normalized CSV header matches normalized DB column name
-                            foundCsvHeaderKey = Object.keys(record).find(csvHeader => 
-                                normalizeKey(csvHeader) === normalizedDbColName
-                            );
+                    const rowValuesForDb = dbColumns.map(dbColName => {
+                        // dbColName is the target clean/camelCased name, e.g., 'shipmentName'
+                        let value = cleanedRecord[dbColName]; // Directly use the dbColName to get value from cleanedRecord
+
+                        // If direct lookup fails, check manualHeaderCorrectionMap
+                        // This might be needed if cleanedRecord's key, despite util_camelCase, isn't an exact match for dbColName
+                        if (value === undefined) {
+                            for (const correctedKey in manualHeaderCorrectionMap) {
+                                if (manualHeaderCorrectionMap[correctedKey] === dbColName) {
+                                     // correctedKey is what util_camelCase might have produced, 
+                                     // manualHeaderCorrectionMap[correctedKey] is the actual dbColName
+                                    if (cleanedRecord[correctedKey] !== undefined) {
+                                        value = cleanedRecord[correctedKey];
+                                        break;
+                                    }
+                                }
+                            }
                         }
-                        
-                        if (foundCsvHeaderKey) {
-                            value = record[foundCsvHeaderKey];
+                         // Special handling for specific DB columns if values need transformation
+                        if (dbColName === 'piValue' || dbColName === 'totalAmount' || dbColName === 'provisionalInvoiceValue' || dbColName === 'finalInvoiceBalance' || dbColName === 'sPrice') {
+                            if (typeof value === 'string') {
+                                // Remove currency symbols and extraneous spaces for storage, but keep commas for numbers.
+                                // The database stores them as TEXT, so this cleaning is for consistency.
+                                // The LLM prompt handles conversion to REAL for querying.
+                                // Frontend formatting handles display.
+                                // value = value.replace(/\$/g, '').trim(); 
+                                // Keep $, frontend will handle it. LLM also handles it with REPLACE.
+                            }
                         }
-                        return value || null;
+
+                        return value !== undefined ? value : null; // Ensure null if value is still undefined
                     });
 
                     if (currentProcessingReport.firstFewMappedRows.length < 3) {
@@ -282,19 +385,22 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
 // API endpoint for LLM Querying - delegates to Python service
 app.post('/api/llm-query', async (req, res) => {
     console.log('POST /api/llm-query request received');
-    const { question } = req.body;
+    const { question, selected_row_data, chat_history } = req.body; // Destructure chat_history
 
     if (!question) {
         return res.status(400).json({ error: 'Missing \'question\' in request body' });
     }
 
     const pythonServiceUrl = 'http://localhost:5001/query'; // URL of your Python Flask service
+    const payloadToPython = {
+        question: question,
+        selected_row_data: selected_row_data, // Pass it along
+        chat_history: chat_history || [] // Pass chat_history, default to empty array if undefined
+    };
 
     try {
-        console.log(`Forwarding question to Python service: ${question}`);
-        const pythonResponse = await axios.post(pythonServiceUrl, {
-            question: question
-        });
+        console.log(`Forwarding to Python service:`, payloadToPython);
+        const pythonResponse = await axios.post(pythonServiceUrl, payloadToPython);
 
         // Relay the Python service's response back to the client
         console.log('Received response from Python service.');
