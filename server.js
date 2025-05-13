@@ -7,11 +7,17 @@ const multer = require('multer'); // For handling file uploads
 const fs = require('fs'); // For reading file content if multer saves to disk (not used with memoryStorage)
 const { parse } = require('csv-parse/sync'); // Import the synchronous parser
 const axios = require('axios'); // Added for making HTTP requests to Python service
+const { Client } = require('@notionhq/client'); // Add Notion Client
 
 console.log('Starting server.js...');
 
+// Initialize Notion client
+// IMPORTANT: Replace 'YOUR_NOTION_API_KEY' with your actual Notion API key.
+// It's highly recommended to use an environment variable for this in production.
+const notion = new Client({ auth: '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' });
+
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
 
 // --- Temporary storage for CSV processing report ---
 let lastCsvProcessingReport = { status: "No CSV processed yet." };
@@ -385,48 +391,41 @@ app.post('/api/upload-csv', upload.single('csvfile'), (req, res) => {
 // API endpoint for LLM Querying - delegates to Python service
 app.post('/api/llm-query', async (req, res) => {
     console.log('POST /api/llm-query request received');
-    const { question, selected_row_data, chat_history } = req.body; // Destructure chat_history
+    const { question, selected_row_data, chat_history } = req.body;
 
-    if (!question) {
-        return res.status(400).json({ error: 'Missing \'question\' in request body' });
-    }
+    console.log('Forwarding to Python service:', { question, selected_row_data, chat_history: chat_history ? chat_history.map(turn => ({...turn, content: turn.content.slice(0,100) + (turn.content.length > 100 ? '...' : '')})) : [] }); // Log truncated history
 
-    const pythonServiceUrl = 'http://localhost:5001/query'; // URL of your Python Flask service
-    const payloadToPython = {
-        question: question,
-        selected_row_data: selected_row_data, // Pass it along
-        chat_history: chat_history || [] // Pass chat_history, default to empty array if undefined
-    };
-
-    try {
-        console.log(`Forwarding to Python service:`, payloadToPython);
-        const pythonResponse = await axios.post(pythonServiceUrl, payloadToPython);
-
-        // Relay the Python service's response back to the client
-        console.log('Received response from Python service.');
-        res.json(pythonResponse.data);
-
-    } catch (error) {
-        console.error('Error calling Python service:', error.message);
-        let errorMsg = 'Error communicating with the LLM data service.';
-        let statusCode = 500;
-
-        if (error.response) {
-            // The request was made and the server responded with a status code
-            // that falls out of the range of 2xx
-            console.error('Python service responded with error:', error.response.data);
-            errorMsg = error.response.data.error || errorMsg; // Use error from Python service if available
-            statusCode = error.response.status || statusCode;
-        } else if (error.request) {
-            // The request was made but no response was received
-            console.error('No response received from Python service:', error.request);
-            errorMsg = 'No response from LLM data service. Ensure it is running.';
-        } else {
-            // Something happened in setting up the request that triggered an Error
-            console.error('Error setting up request to Python service:', error.message);
+    // Filter chat_history before sending to Python
+    const filteredChatHistory = (chat_history || []).filter(turn => {
+        if (turn.role === 'assistant') {
+            // Filter out assistant messages that are just data dumps or standard processing messages
+            const content = turn.content || "";
+            if (content.startsWith('Query executed successfully. Returning data.') ||
+                content.startsWith('Extracted text from PDF to answer question') ||
+                content.startsWith("Could not generate a valid SQL query for your question. LLM said: # Cannot generate SQL") ||
+                content.includes("Generated SQL:")) { // More general filter for SQL outputs
+                return false; // Exclude this turn
+            }
         }
-        res.status(statusCode).json({ error: errorMsg, details: error.message });
-    }
+        return true; // Keep user turns and other assistant turns
+    });
+    
+    // Log the filtered history to see what's actually being sent
+    console.log('Filtered chat_history being sent to Python:', filteredChatHistory.map(turn => ({...turn, content: turn.content.slice(0,100) + (turn.content.length > 100 ? '...' : '')})) );
+
+    const pythonServiceUrl = 'http://localhost:5001/query';
+    const response = await axios.post(pythonServiceUrl, 
+        { question, selected_row_data, chat_history: filteredChatHistory }, 
+        {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        }
+    );
+
+    // Relay the Python service's response back to the client
+    console.log('Received response from Python service.');
+    res.json(response.data);
 });
 
 // New endpoint for CSV processing diagnostics
@@ -471,6 +470,97 @@ app.get('/test-upload-form', (req, res) => {
         </body>
         </html>
     `);
+});
+
+// New API endpoint for Notion queries
+app.post('/api/ask-notion', async (req, res) => {
+    console.log('POST /api/ask-notion request received');
+    const { question } = req.body;
+
+    if (!question) {
+        return res.status(400).json({ error: 'Question is required' });
+    }
+
+    try {
+        const databaseId = '1f07de8bc79380fb8707e21d30b710db'; // Your provided Database ID
+        console.log(`Querying Notion Database ID: ${databaseId} (Ignoring user question for this step)`);
+
+        // Query the specific database
+        // We are not using the user's 'question' to filter the database yet.
+        // This is to first retrieve entries and understand their structure.
+        const databaseQueryResponse = await notion.databases.query({
+            database_id: databaseId,
+        });
+
+        console.log(`Notion database query returned ${databaseQueryResponse.results.length} results.`);
+
+        // Helper function to extract the value from a Notion property object
+        function util_getNotionPropertyValue(property) {
+            if (!property) return null;
+            switch (property.type) {
+                case 'title':
+                    return property.title[0]?.plain_text || null;
+                case 'rich_text':
+                    return property.rich_text[0]?.plain_text || null;
+                case 'number':
+                    return property.number;
+                case 'select':
+                    return property.select?.name || null;
+                case 'multi_select':
+                    return property.multi_select.map(option => option.name);
+                case 'date':
+                    return property.date?.start || null;
+                case 'checkbox':
+                    return property.checkbox;
+                case 'url':
+                    return property.url;
+                case 'email':
+                    return property.email;
+                case 'phone_number':
+                    return property.phone_number;
+                case 'files':
+                    return property.files.map(file => file.name);
+                // Add other types as needed: formula, relation, rollup, people, created_by, created_time, last_edited_by, last_edited_time
+                case 'formula':
+                    switch (property.formula.type) {
+                        case 'string': return property.formula.string;
+                        case 'number': return property.formula.number;
+                        case 'boolean': return property.formula.boolean;
+                        case 'date': return property.formula.date?.start;
+                        default: return null;
+                    }
+                case 'created_time':
+                    return property.created_time;
+                case 'last_edited_time':
+                    return property.last_edited_time;
+                default:
+                    console.warn(`Unsupported Notion property type: ${property.type}`);
+                    return null;
+            }
+        }
+
+        // Transform the results into a simpler array of objects
+        const simplifiedResults = databaseQueryResponse.results.map(page => {
+            const simplifiedPage = { id: page.id };
+            for (const propertyName in page.properties) {
+                // Normalize propertyName for cleaner keys in our simplified object (e.g., remove leading/trailing spaces, camelCase)
+                // For now, let's just trim, as camelCasing might obscure the original Notion name too much for initial debugging
+                const cleanName = propertyName.trim(); 
+                simplifiedPage[cleanName] = util_getNotionPropertyValue(page.properties[propertyName]);
+            }
+            return simplifiedPage;
+        });
+        
+        res.json({
+            answer: `Successfully queried database ${databaseId}. Found ${simplifiedResults.length} item(s). User question "${question}" not yet processed. Displaying simplified results. Full processing TBD.`,
+            originalQuestion: question,
+            notionResponse: simplifiedResults // Send the simplified results
+        });
+
+    } catch (error) {
+        console.error('Error querying Notion API:', error);
+        res.status(500).json({ error: 'Failed to query Notion API', details: error.message });
+    }
 });
 
 console.log('Default route / configured.');

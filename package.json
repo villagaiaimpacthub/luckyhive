@@ -13,6 +13,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@notionhq/client": "^3.0.1",
+    "@notionhq/notion-mcp-server": "^1.7.0",
     "axios": "^1.9.0",
     "cors": "^2.8.5",
     "csv-parse": "^5.6.0",

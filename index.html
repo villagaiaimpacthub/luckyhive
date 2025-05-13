@@ -3,101 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shipping Schedule 2025</title>
+    <title>Metaluck HIVE</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <div class="vox-hero-bg">
+        <header class="vox-header">
+            <div class="vox-logo-title">
+                <span class="vox-logo-text">Metaluck <span class="vox-logo-vox">HIVE</span></span>
+            </div>
+        </header>
+        <main class="vox-main">
+            <h1 class="vox-headline">
+                <span class="vox-highlight">HIVE:</span> <span class="vox-underline">AI-Powered Business Intelligence</span>
+            </h1>
+            <p class="vox-subtitle">
+                Your AI-powered business assistant, turning your operational landscape into actionable intelligence. From critical shipment tracking to comprehensive business insights, HIVE delivers what you need, when you need it.
+            </p>
+        </main>
+    </div>
     <div class="container">
+        <!-- 
         <header>
             <div class="title-bar">
-                <span class="title-icon">🚚</span>
-                <h1>shipping schedule. 2025</h1>
+                <span class="title-icon">📦</span> 
+                <h1>Shipment Tracking</h1>
             </div>
             <div class="actions">
-                <div class="icon-buttons">
-                    <button class="show-all-btn">Show All</button>
-                    <span>⇅</span>
-                    <button id="filterBtn" class="icon-button">Filter</button>
-                    <div id="filterMenu" class="dropdown-menu hidden">
-                        <a href="#" data-filter-type="status" data-filter-value="Done">Status: Done</a>
-                        <a href="#" data-filter-type="status" data-filter-value="In Progress">Status: In Progress</a>
-                        <a href="#" data-filter-type="status" data-filter-value="Not Started">Status: Not Started</a>
-                        <hr>
-                        <a href="#" data-filter-type="clear" data-filter-value="">Clear Filters</a>
+                <input type="text" id="searchInput" placeholder="Search table...">
+                <button class="new-btn">New <span>+</span></button> 
+                <div class="more-options">
+                    <button id="moreOptionsBtn" class="icon-button">⋮</button>
+                    <div id="moreOptionsMenu" class="dropdown-menu hidden">
+                        <a href="#" id="exportCsvBtn">Export to CSV</a>
                     </div>
-                    <input type="text" id="searchInput" placeholder="Search...">
-                    <span>🔍</span>
-                    <div class="more-options">
-                        <button id="moreOptionsBtn" class="icon-button">...</button>
-                        <div id="moreOptionsMenu" class="dropdown-menu hidden">
-                            <a href="#" id="exportCsvBtn">Export to CSV</a>
-                            <!-- Add other options here -->
-                        </div>
-                    </div>
-                    <button class="new-btn">New <span>▼</span></button>
                 </div>
             </div>
         </header>
-        <div class="csv-upload-section">
-            <input type="file" id="csvFile" accept=".csv">
-            <button id="uploadCsvButton">Upload and Display CSV</button>
+        <div class="main-table-wrapper">
+            <table id="shipmentTable">
+                <thead>
+                    <tr>
+                        <th data-column-key="shipmentName">Shipment Name</th>
+                        <th data-column-key="oblNo">OBL No</th>
+                        <th data-column-key="status">Status</th>
+                        <th data-column-key="contractNo">Contract No</th>
+                        <th data-column-key="piNo">PI No</th>
+                        <th data-column-key="piValue">PI Value</th>
+                        <th data-column-key="actions">Actions</th> 
+                    </tr>
+                </thead>
+                <tbody id="shipmentTableBody">
+                </tbody>
+            </table>
         </div>
+        -->
 
-        <div class="hive-query-section">
-            <h2>Ask HIVE about the Shipments</h2>
+        <div class="hive-query-section" style="border: none; background-color: transparent; box-shadow: none; padding: 0; margin: 0;">
             <div id="hiveResultsArea">
                 <!-- HIVE results will be displayed here -->
             </div>
             <div class="hive-input-area">
                 <input type="text" id="hiveQuestionInput" placeholder="e.g., Show all shipments with status Done and ETD after March 2025">
-                <button id="askHiveButton">Ask HIVE</button>
+                <button id="askHiveButton" style="background-color: #00FFD0; color: #000; /* Adding black text for contrast */">Ask HIVE</button>
             </div>
-        </div>
-
-        <div id="csvDisplayArea">
-            <!-- Uploaded CSV data will be displayed here -->
-        </div>
-        <div class="main-table-wrapper">
-            <table>
-                <thead>
-                    <tr>
-                        <th data-column-key="shipmentName">Aa Shipment Name</th>
-                        <th data-column-key="oblNo">OBL No.</th>
-                        <th data-column-key="status">Status</th>
-                        <th data-column-key="contractNo">CONTRACT NO.</th>
-                        <th data-column-key="piNo">PI NO.</th>
-                        <th data-column-key="piValue">PI VALUE</th>
-                        <th data-column-key="invoiceNo">INVOICE NO.</th>
-                        <th data-column-key="fclsGoods">FCLs Goods</th>
-                        <th data-column-key="shippingLine">Shipping Line</th>
-                        <th data-column-key="etd">ETD</th>
-                        <th data-column-key="eta">ETA</th>
-                        <th data-column-key="sPrice">S. Price</th>
-                        <th data-column-key="grossWeight">GROSS WEIGHT</th>
-                        <th data-column-key="contractQuantityMT">Contract Quantity/MT</th>
-                        <th data-column-key="totalAmount">Total Amount</th>
-                        <th data-column-key="provisionalInvoiceValue">Provisional Inv Value</th>
-                        <th data-column-key="finalInvoiceBalance">Final Inv Balance</th>
-                        <th data-column-key="polZnPercent">POL Zn%</th>
-                        <th data-column-key="podZnPercent">POD Zn%</th>
-                        <th data-column-key="polMoisture">POL Moisture%</th>
-                        <th data-column-key="podMoisture">POD Moisture%</th>
-                        <th data-column-key="lmePi">LME PI</th>
-                        <th data-column-key="lmePol">LME POL</th>
-                        <th data-column-key="lmePod">LME POD</th>
-                        <th data-column-key="trackingNo">Tracking #</th>
-                        <th data-column-key="dueDate">Due Date</th>
-                        <th data-column-key="laboratoryReport">Lab Report</th>
-                        <th data-column-key="shippingDocsProvisional">Provisional Docs</th>
-                        <th data-column-key="shippingDocsFinalDocs">Final Docs</th>
-                        <th data-column-key="lastEditedTime">Last Edited</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="shipmentTableBody">
-                    <!-- Table rows will be dynamically inserted here by script.js -->
-                </tbody>
-            </table>
         </div>
     </div>
     <script src="script.js"></script>
